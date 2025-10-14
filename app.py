@@ -581,7 +581,7 @@ def serve_results(filename):
     return send_from_directory(app.config['EXCEL_RESULTS_FOLDER'], filename)
 # 内容提取生成的pdf文件夹
 @app.route('/documents/filter_pdf/<path:filename>')
-def serve_results(filename):
+def serve_filter_pdf(filename):
     # filename 可以包含子目录，例如 doc1/img1.jpg
     return send_from_directory(app.config['FILTER_PDF_FOLDER'], filename)
 if __name__ == '__main__':
