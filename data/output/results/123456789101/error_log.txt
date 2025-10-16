@@ -1,7 +1,0 @@
-[2025-10-13 19:31:24] 处理文件 123456789101/福贡县消防救援站建设项目_初步调查_报告_地块信息提取.md 时出错: create_excel_from_json() missing 1 required positional argument: 'image_base_dir'
-Traceback (most recent call last):
-  File "D:\PostgraduateStudy\env\text_extractor-main\大模型处理.py", line 556, in ai_judge
-    create_excel_from_json(json_data, excel_path)
-TypeError: create_excel_from_json() missing 1 required positional argument: 'image_base_dir'
-
---------------------------------------------------
