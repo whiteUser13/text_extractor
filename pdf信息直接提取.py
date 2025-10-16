@@ -466,7 +466,7 @@ def extract_planning_chapter(pdf_path: str, temp_dir: str) -> Optional[str]:
         return None  # 返回None
 
 
-def merge_chapter_pdfs(status_pdf_path: str, planning_pdf_path: str, output_dir: str) -> Optional[str]:
+def merge_chapter_pdfs(status_pdf_path: str, planning_pdf_path: str, output_dir: str):
     """
     合并两类章节 PDF 并保存至指定目录。
     """
@@ -526,7 +526,7 @@ def merge_chapter_pdfs(status_pdf_path: str, planning_pdf_path: str, output_dir:
     finally:
         merge_doc.close()  # 确保合并文档关闭
 
-    return result_path  # 返回结果路径
+    return output_filename  # 返回结果路径
 
 
 # --- 主执行逻辑 ---
@@ -546,6 +546,7 @@ def extract_dpf(input_dir,output_dir,temp_dir):
     logger.info(f"找到 {len(pdf_files)} 个PDF文件待处理。")  # 记录找到的文件数量
 
     processed_count = 0  # 初始化处理计数器
+    pdf_names = []
     for filename in pdf_files:  # 遍历所有PDF文件
         pdf_path = os.path.join(input_dir, filename)  # 生成完整文件路径
         # --- 打印正在处理的文件名 ---
@@ -560,10 +561,11 @@ def extract_dpf(input_dir,output_dir,temp_dir):
         planning_pdf = extract_planning_chapter(pdf_path, temp_dir)  # 提取规划章节
 
         # 3. 合并章节
-        final_pdf = merge_chapter_pdfs(status_pdf, planning_pdf, output_dir)  # 合并章节
+        final_pdf_name = merge_chapter_pdfs(status_pdf, planning_pdf, output_dir)  # 合并章节
+        pdf_names.append(final_pdf_name)
 
-        if final_pdf:  # 如果成功生成最终PDF
-            logger.debug(f"文件处理完成: {final_pdf}")  # 记录调试信息
+        if final_pdf_name:  # 如果成功生成最终PDF
+            logger.debug(f"文件处理完成: {final_pdf_name}")  # 记录调试信息
         else:
             logger.debug(f"文件处理完成，但未生成合并PDF: {filename} (可能未找到相关章节)")  # 记录调试信息
 
@@ -571,7 +573,7 @@ def extract_dpf(input_dir,output_dir,temp_dir):
         logger.debug(f"--- 文件处理结束 ({processed_count}/{len(pdf_files)}): {filename} ---\n")  # 记录处理结束
 
     logger.info("所有文件处理完毕。")  # 记录所有文件处理完成
-    return True
+    return pdf_names
 
 # if __name__ == "__main__":
 #     extract_dpf()  # 如果是直接运行此脚本，则执行main函数

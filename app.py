@@ -1,12 +1,13 @@
 import os, json
 import uuid
-from flask import Flask, request, jsonify, send_from_directory, render_template_string, abort
+from flask import Flask, request, jsonify, send_from_directory, render_template_string, abort ,Response
 from werkzeug.utils import secure_filename
 from flask import jsonify
 from flask_cors import CORS
 from pathlib import Path
 import time
 from datetime import datetime
+from file_processor import process_compressed_file,process_compressed_file_with_yield
 
 from pdf信息直接提取 import extract_dpf
 from mineru_request import parse_file
@@ -17,7 +18,8 @@ from 大模型处理 import ai_judge
 
 # Flask 应用配置
 app = Flask(__name__)
-CORS(app)  # 跨域配置
+# CORS(app)  # 跨域配置
+CORS(app,supports_credentials=True)
 
 # 文件配置
 UPLOAD_FOLDER = "data/uploads"
@@ -93,11 +95,11 @@ def get_file_type(filename: str) -> str:
 
 
 # ========================
-# 文件上传部分
+# 1.文件上传下载部分
 # ========================
 
 # 单文件上传
-@app.route('/upload', methods=['POST'])
+@app.route('/upload/file', methods=['POST'])
 def upload_file():
     """单文件上传"""
     if 'file' not in request.files:
@@ -154,7 +156,6 @@ def upload_file():
         "status":"completed",
         "file_url": file_url
     })
-
 # 多文件上传
 @app.route('/upload-multiple', methods=['POST'])
 def upload_multiple():
@@ -188,10 +189,43 @@ def upload_multiple():
         })
 
     return jsonify({"files": results})
+# 根据地块编码下载文件
 
+# 获取已下载的文件信息
+@app.route("/files_info/downloads", methods=["GET"])
+def get_downloads_file_info():
+    if not MAP_DOWNLOAD_ZIP.exists():
+        return jsonify({"error": "映射文件缺失"}), 404
+    try:
+        # 读取映射文件
+        with open(MAP_DOWNLOAD_ZIP, "r", encoding="utf-8") as f:
+            file_map = json.load(f)
+        with open(MAP_RESULT_EXCEL, "r", encoding="utf-8") as f:
+            result_map = json.load(f)
+    except json.JSONDecodeError:
+        return jsonify({"error": "JSON 文件格式错误"}), 500
+    # 过滤出 status 不为 undownload和downloading 的项
+    files_info = []
+    for area_code, info in file_map.items():
+        if info.get("status") not in ["undownload", "downloading"]:
+            status = info.get("status")
+            if result_map.get(area_code) is not None:
+                status = result_map[area_code].get("status")
+            files_info.append({
+                "id": info.get("area_code"),
+                "filename": info.get("origin_name"),
+                "size": info.get("size"),
+                "type": info.get("type"),
+                "download_time": info.get("download_time", ""),
+                "status": status
+            })
+    return jsonify({
+        "count": len(files_info),
+        "files": files_info
+    })
 
 # ========================
-# 压缩文件部分
+# 2.解压缩文件部分
 # ========================
 # ------------------获取全部zip文件信息-----------------
 @app.route("/files_info/all_zip", methods=["GET"])
@@ -228,11 +262,11 @@ def list_unextracted_zip_files():
         return jsonify({"error": "上传目录不存在"}), 404
 
     """返回安全文件名与原始文件名的映射"""
-    map_path = Path("data/uploads/upload_file_map.json")
-    if not map_path.exists():
+    # map_path = Path("data/uploads/upload_file_map.json")
+    if not MAP_UPLOAD_FILE.exists():
         return jsonify({"error": "映射文件不存在"}), 404
 
-    with open(map_path, "r", encoding="utf-8") as f:
+    with open(MAP_UPLOAD_FILE, "r", encoding="utf-8") as f:
         file_map = json.load(f)
 
     zip_files_info = []
@@ -261,6 +295,7 @@ def list_unextracted_zip_files():
         })
 
     return jsonify({
+        "status": "success",
         "count": len(zip_files_info),
         "zip_files": zip_files_info
     })
@@ -296,13 +331,51 @@ def list_all_files():
         "count": len(files_info),
         "files": files_info
     })
-# ------------------根据压缩文件名对文件进行解压操作------------
+
+# ------------------根据压缩文件名对文件进行解压操作，并将日志写在前端------------
 # 文件解压成果同时在data/output/filter_pdf、pdf2md、results、images中生成对应名称的文件夹
 
+@app.route("/extract-by-filename-stream", methods=["GET"])
+def extract_by_filename_stream():
+    filename = request.args.get("filename")
+    plot_code = request.args.get("plot_code", os.path.splitext(filename)[0])
+
+    if not filename:
+        return jsonify({"status": "error", "message": "缺少 filename 参数"}), 400
+
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
+    if not os.path.exists(file_path):
+        return jsonify({"status": "error", "message": f"文件 {filename} 不存在"}), 404
+
+    def generate_logs():
+        try:
+            yield f"data: 开始处理文件 {filename}\n\n"
+            for log in process_compressed_file_with_yield(file_path, plot_code, DOWNLOAD_FOLDER):
+                yield f"data: {log}\n\n"
+            yield f"data: 文件 {filename} 处理完成 ✅\n\n"
+        except Exception as e:
+            yield f"data: 出错：{str(e)}\n\n"
+        yield "data: 处理结束\n\n"
+
+    return Response(generate_logs(), mimetype="text/event-stream")
+
+# ------------------获取上传的文件信息------------
+@app.route("/list-uploads", methods=["GET"])
+def list_uploads():
+    try:
+        if not os.path.exists(UPLOAD_FOLDER):
+            os.makedirs(UPLOAD_FOLDER)
+
+        files = os.listdir(UPLOAD_FOLDER)
+        files = [f for f in files if os.path.isfile(os.path.join(UPLOAD_FOLDER, f))]
+
+        return jsonify({"status": "success", "files": files})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
 # ========================
 # 3.内容提取
 # ========================
-# (1)获取downloads文件夹下未解压的文件信息，即status=decompressed
+# (1)获取downloads文件夹下已解压的文件信息，即status=decompressed
 @app.route("/downloads/decompressed", methods=["GET"])
 def get_decompressed_downloads():
     """
@@ -379,10 +452,10 @@ def extractor_folder():
 
         # 处理过程
         temp_dir = os.path.join(input_folder_path, "temp_extracted_chapters")
-        is_success = extract_dpf(input_folder_path,output_folder_path, temp_dir)
+        filter_pdf_names = extract_dpf(input_folder_path,output_folder_path, temp_dir)
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         selected_folder_info["update_time"] = now_str
-        if is_success:
+        if filter_pdf_names:
             # 处理完成后改为 extracted
             selected_folder_info["status"] = "extracted"
             with open(filter_folder_map_path, "w", encoding="utf-8") as f:
@@ -394,7 +467,8 @@ def extractor_folder():
 
             return jsonify({
                 "message": f"{folder_name} 处理成功",
-                "folder_info":selected_folder_info
+                "folder_info":selected_folder_info,
+                "pdf_names":filter_pdf_names
             }), 200
         else:
             # 处理完成后改为 未提取
@@ -559,7 +633,7 @@ def ai_analysis():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
+# (3)获取results文件夹下的
 
 
 
