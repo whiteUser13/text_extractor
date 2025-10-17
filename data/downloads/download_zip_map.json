@@ -1,0 +1,22 @@
+{
+  "123456789101": {
+    "area_code": "123456789101",
+    "file_name": "123456789101.zip",
+    "origin_name": "北京市大兴区北京建筑大学地块一.zip",
+    "folder_name": "北京市大兴区北京建筑大学地块一",
+    "size": 321.34,
+    "type": "zip",
+    "download_time": "2025-10-09 19:56:04",
+    "status": "decompressed"
+  },
+  "1595326646": {
+    "area_code": "1595326646",
+    "file_name": "1595326646.zip",
+    "origin_name": "北京市大兴区北京建筑大学地块二.zip",
+    "folder_name": "北京市大兴区北京建筑大学地块二",
+    "size": 362.34,
+    "type": "zip",
+    "download_time": "2025-10-09 19:23:04",
+    "status": "decompressed"
+  }
+}

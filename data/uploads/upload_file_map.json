@@ -1,0 +1,34 @@
+{
+  "faae34b6143443ac9a47b5536210a691.zip": {
+    "id": "faae34b6143443ac9a47b5536210a691.zip",
+    "origin_name": "zip_test.zip",
+    "size": 321.34,
+    "type": "zip",
+    "upload_time": "2025-10-09 19:56:04",
+    "status": "completed"
+  },
+  "ab43586c371e4620827e9b0d37aa2222.zip": {
+    "id": "ab43586c371e4620827e9b0d37aa2222.zip",
+    "origin_name": "hahah.zip",
+    "size": 0.21,
+    "type": "zip",
+    "upload_time": "2025-10-09 19:56:16",
+    "status": "completed"
+  },
+  "f399e6ac9a5740139befed8830052121.docx": {
+    "id": "f399e6ac9a5740139befed8830052121.docx",
+    "origin_name": "D-北京建筑大学-张博.docx",
+    "size": 246.59,
+    "type": "word",
+    "upload_time": "2025-10-09 19:56:43",
+    "status": "completed"
+  },
+  "c9e006a6a47247a593d692317300904a.docx": {
+    "id": "c9e006a6a47247a593d692317300904a.docx",
+    "origin_name": "B组 地理设计组项目计划书模板.docx",
+    "size": 29.02,
+    "type": "word",
+    "upload_time": "2025-10-09 19:56:52",
+    "status": "completed"
+  }
+}
