@@ -334,7 +334,6 @@ def list_all_files():
 
 # ------------------根据压缩文件名对文件进行解压操作，并将日志写在前端------------
 # 文件解压成果同时在data/output/filter_pdf、pdf2md、results、images中生成对应名称的文件夹
-
 @app.route("/extract-by-filename-stream", methods=["GET"])
 def extract_by_filename_stream():
     filename = request.args.get("filename")
@@ -481,6 +480,48 @@ def extractor_folder():
             }), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# 获取filter_pdf下的文件夹信息
+@app.route("/filter_pdf/folders_info", methods=["GET"])
+def get_filter_pdf_folders_info():
+    if not MAP_FILTER_PDF.exists():
+        return jsonify({"error": "映射文件不存在"}), 404
+    try:
+        # 读取映射文件
+        with open(MAP_FILTER_PDF, "r", encoding="utf-8") as f:
+            folder_map = json.load(f)
+    except json.JSONDecodeError:
+        return jsonify({"error": "JSON 文件格式错误"}), 500
+    folders_info = []
+    for area_code, info in folder_map.items():
+        if info.get("status") == "extracted":
+            status = info.get("status")
+            folders_info.append(info)
+    return jsonify({
+        "count": len(folders_info),
+        "files": folders_info
+    })
+
+# 根据地块编码获取已经提取的pdf文件
+@app.route("/filter_pdf/extracteds", methods=["GET"])
+def get_filter_pdf_by_ared_code():
+    # 获取GET请求参数
+    area_code = request.args.get("area_code")  #
+
+    if not area_code:
+        return jsonify({"error": "缺少必要参数 folder_name"}), 400
+
+    excluded_exts = ['.json', '.txt', '.log']  # 要排除的后缀列表
+    folder_path = Path(app.config['FILTER_PDF_FOLDER']) / area_code
+    files = [
+        f for f in os.listdir(folder_path)
+        if os.path.isfile(os.path.join(folder_path, f))
+           and not os.path.splitext(f)[1].lower() in excluded_exts
+    ]
+    return jsonify({
+        "count": len(files),
+        "files": files
+    })
 
 
 # ========================

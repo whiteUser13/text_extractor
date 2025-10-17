@@ -572,7 +572,7 @@ def extract_dpf(input_dir,output_dir,temp_dir):
         processed_count += 1  # 增加处理计数器
         logger.debug(f"--- 文件处理结束 ({processed_count}/{len(pdf_files)}): {filename} ---\n")  # 记录处理结束
 
-    logger.info("所有文件处理完毕。")  # 记录所有文件处理完成
+    logger.info("所有文件处理完毕。")  # 记录所有文件处理完
     return pdf_names
 
 # if __name__ == "__main__":
