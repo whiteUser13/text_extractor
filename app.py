@@ -481,9 +481,10 @@ def extractor_folder():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# 获取filter_pdf下的文件夹信息
-@app.route("/filter_pdf/folders_info", methods=["GET"])
-def get_filter_pdf_folders_info():
+
+# 获取filter_pdf下已提取的文件夹信息
+@app.route("/filter_pdf/extracted/folders_info", methods=["GET"])
+def get_filter_pdf_extracted_folders_info():
     if not MAP_FILTER_PDF.exists():
         return jsonify({"error": "映射文件不存在"}), 404
     try:
@@ -495,14 +496,31 @@ def get_filter_pdf_folders_info():
     folders_info = []
     for area_code, info in folder_map.items():
         if info.get("status") == "extracted":
-            status = info.get("status")
             folders_info.append(info)
     return jsonify({
         "count": len(folders_info),
-        "files": folders_info
+        "folders": folders_info
     })
-
-# 根据地块编码获取已经提取的pdf文件
+# 获取results下已判别的文件夹信息
+@app.route("/results/judged/folders_info", methods=["GET"])
+def get_results_results_folders_info():
+    if not MAP_RESULT_EXCEL.exists():
+        return jsonify({"error": "映射文件不存在"}), 404
+    try:
+        # 读取映射文件
+        with open(MAP_RESULT_EXCEL, "r", encoding="utf-8") as f:
+            folder_map = json.load(f)
+    except json.JSONDecodeError:
+        return jsonify({"error": "JSON 文件格式错误"}), 500
+    folders_info = []
+    for area_code, info in folder_map.items():
+        if info.get("status") == "judged":
+            folders_info.append(info)
+    return jsonify({
+        "count": len(folders_info),
+        "folders": folders_info
+    })
+# 根据地块编码获取已经提取的pdf文件名称
 @app.route("/filter_pdf/extracteds", methods=["GET"])
 def get_filter_pdf_by_ared_code():
     # 获取GET请求参数
@@ -523,6 +541,39 @@ def get_filter_pdf_by_ared_code():
         "files": files
     })
 
+#动态 URL 路径参数 来实现获取outpurt下的文件夹里的文件信息
+@app.route("/get_folder_info/<folder_name>/<area_code>", methods=["GET"])
+def get_folder_info(folder_name, area_code):
+    """
+    根据 folder_name 和 area_code 获取文件夹信息
+    """
+
+    if folder_name == "filter_pdf":
+        folder_path = Path(app.config['FILTER_PDF_FOLDER']) / area_code
+        excluded_exts = ['.json', '.txt', '.log']  # 要排除的后缀列表
+        files = [
+            f for f in os.listdir(folder_path)
+            if os.path.isfile(os.path.join(folder_path, f))
+               and not os.path.splitext(f)[1].lower() in excluded_exts
+        ]
+        return jsonify({
+            "count": len(files),
+            "files": files
+        })
+    elif folder_name == "results":
+        folder_path = Path(app.config['EXCEL_RESULTS_FOLDER']) / area_code
+        excluded_exts = ['.json', '.txt', '.log']  # 要排除的后缀列表
+        files = [
+            f for f in os.listdir(folder_path)
+            if os.path.isfile(os.path.join(folder_path, f))
+               and not os.path.splitext(f)[1].lower() in excluded_exts
+        ]
+        return jsonify({
+            "count": len(files),
+            "files": files
+        })
+    else:
+        return jsonify({"error": "路径参数有误"}), 400
 
 # ========================
 # 4.智能判别
