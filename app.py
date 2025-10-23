@@ -7,8 +7,7 @@ from flask_cors import CORS
 from pathlib import Path
 import time
 from datetime import datetime
-from file_processor import process_compressed_file,process_compressed_file_with_yield
-
+from file_processor import process_compressed_file_with_yield
 from pdf信息直接提取 import extract_dpf
 from mineru_request import parse_file
 from 大模型处理 import ai_judge
@@ -253,52 +252,79 @@ def list_zip_files():
 def list_unextracted_zip_files():
     """
     列出未解压的 ZIP 文件及其大小信息
-    逻辑：
-      - 仅返回 .zip 文件
-      - 若存在与文件同名的文件夹，则认为该 zip 已解压过，不返回
+    同时扫描：
+      1. UPLOAD_FOLDER 下的未解压 ZIP
+      2. DOWNLOAD_FOLDER 下的 ZIP（不需要判断是否解压）
     """
-    folder = Path(app.config['UPLOAD_FOLDER'])
-    if not folder.exists():
-        return jsonify({"error": "上传目录不存在"}), 404
+    upload_folder = Path(app.config['UPLOAD_FOLDER'])
+    download_folder = Path(app.config['DOWNLOAD_FOLDER'])
 
-    """返回安全文件名与原始文件名的映射"""
-    # map_path = Path("data/uploads/upload_file_map.json")
+    if not upload_folder.exists() and not download_folder.exists():
+        return jsonify({"error": "上传或下载目录不存在"}), 404
+
+    # 读取上传文件映射表
     if not MAP_UPLOAD_FILE.exists():
         return jsonify({"error": "映射文件不存在"}), 404
 
     with open(MAP_UPLOAD_FILE, "r", encoding="utf-8") as f:
         file_map = json.load(f)
 
-    zip_files_info = []
+    def collect_zip_files(folder: Path, check_extracted=True):
+        """通用扫描函数，可控制是否判断解压状态"""
+        result = []
+        for file in folder.glob("*.zip"):
+            if not file.is_file():
+                continue
 
-    for file in folder.glob("*.zip"):
-        if not file.is_file():
-            continue
+            # 若需要检查是否解压过（仅针对 upload 目录）
+            if check_extracted:
+                extracted_folder = folder / file.stem
+                if extracted_folder.exists() and extracted_folder.is_dir():
+                    continue  # 已解压则跳过
 
-        # 检查是否已解压：是否存在同名文件夹
-        extracted_folder = folder / file.stem  # 例如 data.zip -> data/
-        if extracted_folder.exists() and extracted_folder.is_dir():
-            continue  # 已解压，跳过
-        stat = file.stat()
-        modify_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
-        size_kb = round(stat.st_size / 1024, 2)
-        file_info = file_map.get(file.name, {})
-        zip_files_info.append({
-            "id": file.name,
-            "origin_name":file_info.get("origin_name", file.name),
-            "size_kb": size_kb,
-            "size_mb": round(size_kb / 1024, 2),
-            "type": file_info.get("type", get_file_type(file.name)),
-            "upload_time":file_info.get("upload_time", modify_time),
-            "status":file_info.get("type", "uploaded"),
-            "url": f"/uploads/{file.name}"
-        })
+            # 对于 download 目录，有时解压后的文件夹命名为 extract_<原始文件名>
+            # 如果存在以 extract_ 前缀的解压文件夹，也应视为已解压并跳过
+            if folder == download_folder:
+                alt_extracted = folder / f"extracted_{file.stem}"
+                normal_extracted = folder / file.stem
+                if alt_extracted.exists() and alt_extracted.is_dir():
+                    continue
+                if normal_extracted.exists() and normal_extracted.is_dir():
+                    continue
+
+            stat = file.stat()
+            modify_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
+            size_kb = round(stat.st_size / 1024, 2)
+            file_info = file_map.get(file.name, {})
+
+            result.append({
+                "id": file.name,
+                "origin_name": file_info.get("origin_name", file.name),
+                "size_kb": size_kb,
+                "size_mb": round(size_kb / 1024, 2),
+                "type": file_info.get("type", get_file_type(file.name)),
+                "upload_time": file_info.get("upload_time", modify_time),
+                "status": file_info.get("type", "uploaded"),
+                "folder": str(folder),
+                "url": f"/uploads/{file.name}" if folder == upload_folder else f"/downloads/{file.name}"
+            })
+        return result
+
+    # 🔹 扫描上传目录
+    upload_files = collect_zip_files(upload_folder, check_extracted=True)
+
+    # 🔹 扫描下载目录
+    download_files = collect_zip_files(download_folder, check_extracted=False)
+
+    # 合并两个结果
+    all_files = upload_files + download_files
 
     return jsonify({
         "status": "success",
-        "count": len(zip_files_info),
-        "zip_files": zip_files_info
+        "count": len(all_files),
+        "zip_files": all_files
     })
+
 # ------------------获取文件信息--------------------
 @app.route("/files_info/all", methods=["GET"])
 def list_all_files():
@@ -331,32 +357,86 @@ def list_all_files():
         "count": len(files_info),
         "files": files_info
     })
+@app.route("/files_info/zip/stream", methods=["GET"])
+def stream_zip_files():
+    """
+    实时推送 ZIP 文件变化（SSE）
+    后端检测 upload_folder 与 download_folder 内容是否变化
+    """
+    upload_folder = Path(app.config['UPLOAD_FOLDER'])
+    download_folder = Path(app.config['DOWNLOAD_FOLDER'])
+    
+    def scan_files():
+        """与 list_unextracted_zip_files 中的逻辑一致"""
+        # 调用现有函数复用逻辑
+        from io import StringIO
+        with app.test_request_context():
+            response = list_unextracted_zip_files()
+            return response.get_json()
+    
+    def generate():
+        last_state = None
+        while True:
+            try:
+                data = scan_files()
+                new_state = json.dumps(data, ensure_ascii=False)
+                if new_state != last_state:  # 检测变化
+                    yield f"data: {new_state}\n\n"
+                    last_state = new_state
+                time.sleep(2)  # 每2秒检测一次
+            except GeneratorExit:
+                break
+            except Exception as e:
+                yield f"data: {{\"status\":\"error\",\"message\":\"{str(e)}\"}}\n\n"
+                time.sleep(5)
+    return Response(generate(), mimetype="text/event-stream")
 
 # ------------------根据压缩文件名对文件进行解压操作，并将日志写在前端------------
 # 文件解压成果同时在data/output/filter_pdf、pdf2md、results、images中生成对应名称的文件夹
 @app.route("/extract-by-filename-stream", methods=["GET"])
 def extract_by_filename_stream():
+    """
+    支持从 UPLOAD_FOLDER 和 DOWNLOAD_FOLDER 两个目录解压文件
+    通过 filename 参数识别文件名，
+    优先从 UPLOAD_FOLDER 查找，找不到再去 DOWNLOAD_FOLDER。
+    """
     filename = request.args.get("filename")
-    plot_code = request.args.get("plot_code", os.path.splitext(filename)[0])
+    plot_code = request.args.get("plot_code", os.path.splitext(filename or "")[0])
 
     if not filename:
         return jsonify({"status": "error", "message": "缺少 filename 参数"}), 400
 
+    # 🔹 先检查 UPLOAD_FOLDER
     file_path = os.path.join(UPLOAD_FOLDER, filename)
+    folder_source = "UPLOAD_FOLDER"
+
+    # 🔹 如果上传目录没有，再检查 DOWNLOAD_FOLDER
     if not os.path.exists(file_path):
-        return jsonify({"status": "error", "message": f"文件 {filename} 不存在"}), 404
+        alt_path = os.path.join(DOWNLOAD_FOLDER, filename)
+        if os.path.exists(alt_path):
+            file_path = alt_path
+            folder_source = "DOWNLOAD_FOLDER"
+        else:
+            return jsonify({"status": "error", "message": f"文件 {filename} 不存在"}), 404
 
     def generate_logs():
         try:
-            yield f"data: 开始处理文件 {filename}\n\n"
-            for log in process_compressed_file_with_yield(file_path, plot_code, DOWNLOAD_FOLDER):
+            yield f"data: 开始处理文件 {filename}（来源：{folder_source}）\n\n"
+
+            # 🔹 调用统一的处理逻辑
+            for log in process_compressed_file_with_yield(
+                file_path, plot_code, DOWNLOAD_FOLDER
+            ):
                 yield f"data: {log}\n\n"
+
             yield f"data: 文件 {filename} 处理完成 ✅\n\n"
         except Exception as e:
             yield f"data: 出错：{str(e)}\n\n"
         yield "data: 处理结束\n\n"
 
+    # 使用 SSE 流式响应
     return Response(generate_logs(), mimetype="text/event-stream")
+
 
 # ------------------获取上传的文件信息------------
 @app.route("/list-uploads", methods=["GET"])
