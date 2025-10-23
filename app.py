@@ -12,6 +12,10 @@ from file_processor import process_compressed_file,process_compressed_file_with_
 from pdf信息直接提取 import extract_dpf
 from mineru_request import parse_file
 from 大模型处理 import ai_judge
+from 批量报告下载 import download_file_by_area_code
+
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 
 # ====================配置项=====================
@@ -20,6 +24,7 @@ from 大模型处理 import ai_judge
 app = Flask(__name__)
 # CORS(app)  # 跨域配置
 CORS(app,supports_credentials=True)
+executor = ThreadPoolExecutor(max_workers=3)
 
 # 文件配置
 UPLOAD_FOLDER = "data/uploads"
@@ -28,6 +33,7 @@ IMAGE_FOLDER = "data/images"
 PDF_TO_MD_FOLDER = "data/output/pdf2md"
 FILTER_PDF_FOLDER = "data/output/filter_pdf"
 EXCEL_RESULTS_FOLDER = "data/output/results"
+
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['DOWNLOAD_FOLDER'] = DOWNLOAD_FOLDER
 app.config['IMAGE_FOLDER'] = IMAGE_FOLDER
@@ -56,6 +62,10 @@ if not MAP_UPLOAD_FILE.exists():
 MAP_DOWNLOAD_ZIP = Path("data/downloads/download_zip_map.json")
 if not MAP_UPLOAD_FILE.exists():
     MAP_DOWNLOAD_ZIP.write_text("{}", encoding="utf-8")  # 存储为字典结构
+# 待下载文件映射词典
+MAP_PENDING_TASK = Path("data/downloads/pending_tasks.json")
+if not MAP_PENDING_TASK.exists():
+    MAP_PENDING_TASK.write_text("{}", encoding="utf-8")
 # 筛选文件名映射词典
 MAP_FILTER_PDF = Path("data/output/filter_pdf/folder_map.json")
 if not MAP_FILTER_PDF.exists():
@@ -92,7 +102,14 @@ def get_file_type(filename: str) -> str:
         return "zip"
     else:
         return "other"
-
+def load_json(path):
+    if not path.exists():
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 # ========================
 # 1.文件上传下载部分
@@ -189,7 +206,84 @@ def upload_multiple():
         })
 
     return jsonify({"files": results})
+
+# 添加下载任务
+@app.route("/add_download_task", methods=["POST"])
+def add_download_task():
+    data = request.get_json()
+    area_code_arr = data.get("area_codes")
+
+    if not area_code_arr:
+        return jsonify({"error": "缺少必要参数 area_codes"}), 400
+    # 加载当前任务文件
+    if MAP_PENDING_TASK.exists():
+        with open(MAP_PENDING_TASK, "r", encoding="utf-8") as f:
+            tasks = json.load(f)
+    else:
+        tasks = {}
+    return_tasks = []
+    for area_code in area_code_arr:
+
+        if area_code in tasks:
+            return_tasks.append(tasks[area_code])
+            continue
+        # 添加任务
+        tasks[area_code] = {
+            "area_code": area_code,
+            "status": "pending",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        return_tasks.append(tasks[area_code])
+    with open(MAP_PENDING_TASK, "w", encoding="utf-8") as f:
+        json.dump(tasks, f, ensure_ascii=False, indent=2)
+
+    return jsonify({"message": "任务添加成功", "task": return_tasks})
+
 # 根据地块编码下载文件
+def download_file_task(area_code):
+    tasks = load_json(MAP_PENDING_TASK)
+    task = tasks.get(area_code, {})
+    task["status"] = "downloading"
+    save_json(MAP_PENDING_TASK, tasks)
+    result = download_file_by_area_code(area_code, DOWNLOAD_FOLDER)
+    if result["success"]:
+        task["status"] = "downloaded"
+        save_json(MAP_PENDING_TASK, tasks)
+        # 往download_zip_map.json上添加信息
+        downloads = load_json(MAP_DOWNLOAD_ZIP)
+        downloads[area_code] = {
+            "area_code": area_code,
+            "file_name": result["final_file_name"],
+            "origin_name": result["final_file_name"],
+            "folder_name": Path(result["final_file_name"]).stem,
+            "size": result["size"],
+            "type": Path(result["final_file_name"]).suffix,
+            "download_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "downloaded"
+        }
+        save_json(MAP_DOWNLOAD_ZIP, downloads)
+    else:
+        task["status"] = "error"
+        save_json(MAP_PENDING_TASK, tasks)
+
+
+def background_task_checker():
+    while True:
+        try:
+            tasks = load_json(MAP_PENDING_TASK)
+            for area_code, info in tasks.items():
+                if info.get("status") == "pending":
+                    print(f"[调度器] 发现待下载任务: {area_code}")
+                    executor.submit(download_file_task, area_code)
+                    time.sleep(1)
+        except Exception as e:
+            print("[调度器错误]", e)
+        time.sleep(10)  # 每 5 秒扫描一次
+
+def start_background_thread():
+    print("✅ 后台线程已启动")
+    t = threading.Thread(target=background_task_checker, daemon=True)
+    t.start()
 
 # 获取已下载的文件信息
 @app.route("/files_info/downloads", methods=["GET"])
@@ -752,4 +846,6 @@ def serve_filter_pdf(filename):
     return send_from_directory(app.config['FILTER_PDF_FOLDER'], filename)
 if __name__ == '__main__':
     # host='0.0.0.0' 允许外部访问
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        start_background_thread()
     app.run(debug=True, host='0.0.0.0', port=8000)

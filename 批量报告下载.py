@@ -1,4 +1,6 @@
 import os
+from typing import Any
+
 import pandas as pd
 import requests
 import re
@@ -186,6 +188,120 @@ def download_reports():
     save_error_log(error_log_dir)
     print(f"\n下载完成，共成功下载了 {download_count} 份报告")
 
+def download_file_by_area_code(code: str, save_dir: str) -> dict[str, Any]:
+    error_log_dir = os.path.join(save_dir, "error_logs")
+    if not os.path.exists(error_log_dir):
+        os.makedirs(error_log_dir)
+    # 创建保存目录（如果不存在）
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    # 设置请求头，模拟浏览器行为
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    }
+    # 使用会话保持
+    session = requests.Session()
+    base_url = "http://10.251.103.56/admin/suspected/projectinfo/downloadBg.do?bmOrMc="
+
+    download_url = base_url + str(code)
+    success = False
+    err_msg = ""
+    final_file_name = ""
+    size = 0
+    try:
+        # 发送请求
+        response = session.get(download_url, headers=headers, stream=True, timeout=30)
+        # 检查请求是否成功
+        if response.status_code == 200:
+            # 从Content-Disposition头中获取文件名
+            content_disposition = response.headers.get('Content-Disposition', '')
+            print(f"Content-Disposition: {content_disposition}")
+            filename = None
+            if content_disposition:
+                # 处理utf-8编码的文件名
+                if "utf-8''" in content_disposition:
+                    # 提取utf-8编码的文件名部分
+                    utf8_part = content_disposition.split("utf-8''")[-1]
+                    # 移除可能的多余部分
+                    filename = utf8_part.split(';')[0].strip()
+                    # URL解码
+                    filename = requests.utils.unquote(filename)
+                else:
+                    # 常规的文件名提取
+                    filename_match = re.findall(r'filename="?(.+?)"?;', content_disposition)
+                    if filename_match:
+                        filename = filename_match[0].strip('"')
+
+            # 如果从header中获取到文件名，使用 地块编码_文件名 的格式
+            if filename:
+                # 清理文件名中的非法字符
+                filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+                # 确保文件名以地块编码开头
+                if not filename.startswith(str(code)):
+                    final_filename = f"{code}_{filename}"
+                else:
+                    final_filename = filename
+            else:
+                # 如果没有获取到文件名，使用地块编码作为文件名
+                content_type = response.headers.get('Content-Type', '')
+                if 'pdf' in content_type.lower():
+                    extension = '.pdf'
+                elif 'word' in content_type.lower():
+                    extension = '.doc'
+                elif 'excel' in content_type.lower() or 'sheet' in content_type.lower():
+                    extension = '.xls'
+                else:
+                    extension = '.bin'
+                final_filename = f"{code}{extension}"
+
+            file_path = os.path.join(save_dir, final_filename)
+
+            # 保存文件
+            total_size = 0
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        total_size += len(chunk)
+
+            # 检查文件大小
+            file_size = os.path.getsize(file_path)
+            if file_size > 0:
+                print(f"✓ 成功下载: {final_filename} (大小: {file_size} 字节)")
+                success = True
+                final_file_name = final_filename
+                size = file_size
+            else:
+                print(f"✗ 下载的文件为空: {final_filename}")
+                if os.path.exists(file_path):
+                    os.remove(file_path)  # 删除空文件
+                # 记录错误信息
+                log_error(code, "下载的文件为空", "empty_file")
+                err_msg = "下载的文件为空"
+        else:
+            error_msg = f"下载失败: 状态码 {response.status_code}"
+            print(f"✗ {error_msg}")
+            # 记录错误信息
+            log_error(code, error_msg, "http_error")
+            err_msg = error_msg
+
+    except Exception as e:
+        error_msg = f"下载出错: {e}"
+        print(f"✗ {error_msg}")
+        # 记录错误信息
+        log_error(code, error_msg, "exception")
+        err_msg = error_msg
+    # 下载完成后保存错误日志
+    save_error_log(error_log_dir)
+    if success:
+        return {"success": success, "filename": final_file_name,"size": size}
+    else:
+        return {"success": success, "err_msg": err_msg}
 
 def log_error(plot_code, error_message, error_type):
     """记录错误信息"""
