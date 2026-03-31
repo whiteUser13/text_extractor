@@ -1,6 +1,10 @@
 # ========== 数据文件夹 ==========
 data/
+# 但保留 tasks 子目录
+!data/tasks/
 
+# 再保留指定文件
+!data/tasks/100000_full.json
 
 .idea/
 

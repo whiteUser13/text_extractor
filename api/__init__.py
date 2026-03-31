@@ -11,6 +11,7 @@ from .static_file_api import file_bp
 from .convert_api import convert_bp
 from .processStatus_api import processStatus_bp  # 12.24修改[总日志追踪]
 from .airesult_api import airesult_bp # 0305新增
+from .statistic_api import statistic_bp
 from .auth_api import auth_bp
 from flask import Blueprint, jsonify
 import traceback
@@ -30,6 +31,7 @@ def register_blueprints(app):
     app.register_blueprint(processStatus_bp, url_prefix="/api/processStatus")   #12.24新增[总日志追踪]
     app.register_blueprint(auth_bp,url_prefix="/api/auth")
     app.register_blueprint(airesult_bp, url_prefix="/api/airesult")  # 0305新增
+    app.register_blueprint(statistic_bp, url_prefix="/api/statistic")# 0331新增
     register_blueprint_error_handlers(app)
 
 
