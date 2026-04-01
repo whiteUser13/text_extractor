@@ -1,0 +1,111 @@
+# ========== 数据文件夹 ==========
+data/*
+# 但保留 tasks 子目录
+!data/tasks/
+# 忽略 tasks 目录下的所有文件
+data/tasks/*
+# 只保留指定的这一个文件
+!data/tasks/100000_full.json
+
+.idea/
+
+# ========== Python 相关 ==========
+# 字节码
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# 分发/打包
+build/
+dist/
+*.egg-info/
+*.egg
+
+# ========== IDE 和编辑器 ==========
+# VSCode
+.vscode/
+.history/
+
+# PyCharm
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# ========== 操作系统 ==========
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+*.swp
+*.swo
+
+# ========== 日志和临时文件 ==========
+*.log
+*.tmp
+*.temp
+*.cache
+*.pid
+
+# ========== 配置文件（敏感信息） ==========
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 密钥和证书
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# ========== 测试和覆盖率 ==========
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+*.cover
+
+# ========== 项目特定 ==========
+# 如果有模型文件
+*.pkl
+*.h5
+*.pb
+*.pt
+*.pth
+*.onnx
+
+# 如果有图片/媒体文件（根据需要开启）
+# *.jpg
+# *.png
+# *.mp4
+# *.pdf
+
+# 如果有备份文件
+*.bak
+*.backup
