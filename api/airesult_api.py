@@ -95,6 +95,7 @@ def _parse_extraction_json(extract_obj: dict):
 
     page_idx = extract_obj.get("page_idx") or {}
     results = extract_obj.get("extraction_results") or []
+    ai_extraction_results = extract_obj.get("ai_extraction_results") or {}
 
     extraction_result = {}
     if isinstance(results, list) and len(results) > 0 and isinstance(results[0], dict):
@@ -103,7 +104,7 @@ def _parse_extraction_json(extract_obj: dict):
     if not isinstance(page_idx, dict):
         page_idx = {}
 
-    return extraction_result, page_idx
+    return extraction_result, page_idx,ai_extraction_results
 
 
 def _find_extraction_json(task_dirs: dict, file_name: str):
@@ -314,15 +315,19 @@ def airesult_file_details():
         # extraction
         extract_path = _find_extraction_json(task_dirs, file_name)
         extract_obj = _safe_load_json(extract_path) if extract_path else {}
-        extraction_result, page_idx = _parse_extraction_json(extract_obj)
+        extraction_result, page_idx, ai_extraction_results = _parse_extraction_json(extract_obj)
 
         # discrimination
         dis_path, dis_obj = _find_discrimination_json(task_dirs, file_name)
         judge_result = {}
         judge_error = None
+        ai_judged_results = {}
 
         if dis_obj:
             dis_map, dis_err = _parse_discrimination_json(dis_obj)
+            if "ai_judged_results" in dis_map:
+                ai_judged_results = dis_map.get("ai_judged_results")
+
             if dis_err:
                 judge_error = dis_err
                 judge_result = _sanitize_judge_result({"error": dis_err})
@@ -344,8 +349,10 @@ def airesult_file_details():
         payload = {
             "file_name": file_name,
             "extraction_result": extraction_result,
+            "ai_extraction_results":ai_extraction_results,
             "page_idx": page_idx,
             "judge_result": judge_result,
+            "ai_judged_results": ai_judged_results,
             "judge_error": judge_error,
             "extraction_json": str(extract_path) if extract_path else None,
             "discrimination_json": str(dis_path) if dis_path else None
