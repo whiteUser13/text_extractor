@@ -16,6 +16,7 @@ from utils.task_folder_utils import task_folder_utils
 from utils.auth_util import AuthUtils
 from utils.task_verify import task_permission_required
 from utils.json_manager import ResultCollectionJsonFileManager
+from utils.content_extraction import deepseek_generate_stream,deepseek_v3_guangzhou,generate_stream
 
 airesult_bp = Blueprint("airesult", __name__)
 
@@ -527,3 +528,105 @@ def airesult_review():
         return jsonify(api_fail(traceback.format_exc())), 500
 
 
+@airesult_bp.post("/ai/statistics")
+@AuthUtils.token_required
+@task_permission_required()
+def ai_statistics():
+    try:
+        data = request.json
+        model = data.get("model", "env")
+        stat_type = data.get("statType", "all")
+        user_prompt = data.get("prompt", "")
+        custom_fields = data.get("customFields", [])
+        task_id = data.get("task_id", "")
+        if not task_id:
+            return jsonify(api_fail("缺少task_id")), 400
+
+        task_dirs = task_folder_utils.get_task_dirs(task_id)
+        # file_names = _list_parsed_file_names(task_dirs)
+        result_collection_file_path = task_dirs['base'] / "result_collection.json"
+        if not result_collection_file_path.exists():
+            return jsonify(api_fail("此任务尚未提取和判别文件")), 401
+        with result_collection_json_manager.file_lock:
+            collections = result_collection_json_manager.load_json_without_lock(result_collection_file_path)
+        judge_items = []
+        extract_items = []
+        for collection in collections:
+            extract_items.append(collection["extraction_results"][0])
+            collection["judge_results"].pop('user_rules', None)
+            judge_items.append(collection["judge_results"])
+        # =========================
+        # 1️⃣ 选择数据
+        # =========================
+        selected_data = []
+
+        if stat_type == "judge":
+            selected_data = judge_items
+        elif stat_type == "extract":
+            selected_data = extract_items
+        else:  # all
+            for collection in collections:
+                collection["judge_results"].pop('user_rules', None)
+                selected_data.append(collection["extraction_results"][0] | collection["judge_results"])
+
+        # =========================
+        # 2️⃣ 拼接自定义字段
+        # =========================
+        custom_field_str = "\n".join(
+            [f"{f}," for f in custom_fields]
+        )
+
+        # =========================
+        # 3️⃣ 构造 Prompt（核心）
+        # =========================
+        final_prompt = f"""
+        你是一个数据分析助手，请根据提供的数据完成统计分析任务。
+
+        【用户统计需求】
+        {user_prompt}
+
+        【数据】
+        {json.dumps(selected_data, ensure_ascii=False)}
+
+        【用户自定义字段】
+        {custom_field_str}
+
+        【任务要求】
+        1. 根据用户的自定义字段对此对象数组进行统计分析，每个对象是一个数据记录，包含提取结果和判别结果等信息。统计分析可以是计数、分类、求和、平均值等，具体取决于用户的需求。
+        2. 只返回统计结果，不要解释
+        3. 如果不包含用户自定义的字段，value为0
+        4. 返回 JSON 数组格式，格式如下：
+
+        [
+          {{"name": "分类1", "value": 数值}},
+          {{"name": "分类2", "value": 数值}}
+        ]
+
+        5. 必须是合法 JSON，不能包含任何多余文字
+        """
+        # =========================
+        # 4️⃣ 调用大模型
+        # =========================
+        if model == "guangzhou":
+            result = deepseek_v3_guangzhou(final_prompt)
+        elif model == "env":
+            result = generate_stream(final_prompt)
+        elif model == "online":
+            result = deepseek_generate_stream(final_prompt)
+        print(result)
+        if result == None:
+            return jsonify(api_fail("模型无法使用，请切换")), 500
+        # =========================
+        # 5️⃣ 解析返回（关键）
+        # =========================
+        try:
+            parsed = json.loads(result)
+        except Exception as e:
+            print("解析失败:", e)
+            parsed = []
+
+        return jsonify({
+            "data": parsed
+        })
+    except Exception:
+        return jsonify(api_fail(traceback.format_exc())), 500
