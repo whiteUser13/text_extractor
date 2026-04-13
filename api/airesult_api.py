@@ -277,7 +277,11 @@ def airesult_file_info():
 
         task_dirs = task_folder_utils.get_task_dirs(task_id)
         # file_names = _list_parsed_file_names(task_dirs)
-        result_collection_file_path = task_dirs['base'] / "result_collection.json"
+        # result_collection_file_path = task_dirs['base'] / "result_collection.json"
+        from .statistic_api import _get_task_record_from_tasks_json
+        task_record = _get_task_record_from_tasks_json(task_id)
+        scene_id = str(task_record.get("sceneId") or "default").strip()
+        result_collection_file_path = task_dirs['base'] / f"result_collection_{scene_id}.json"
         if not result_collection_file_path.exists():
             result_collection_file_path.write_text("[]", encoding="utf-8")
         with result_collection_json_manager.file_lock:
@@ -500,7 +504,11 @@ def airesult_review():
 
         # 0327修改：同步更新 result_collection.json，确保“已核查数量”能统计到
         try:
-            result_collection_file_path = task_dirs['base'] / "result_collection.json"
+            # 
+            from .statistic_api import _get_task_record_from_tasks_json
+            task_record = _get_task_record_from_tasks_json(task_id)
+            scene_id = str(task_record.get("sceneId") or "default").strip()
+            result_collection_file_path = task_dirs['base'] / f"result_collection_{scene_id}.json"
             if not result_collection_file_path.exists():
                 result_collection_file_path.write_text("[]", encoding="utf-8")
             # 使用文件锁，确保多任务读取时文件不被破坏
@@ -544,7 +552,11 @@ def ai_statistics():
 
         task_dirs = task_folder_utils.get_task_dirs(task_id)
         # file_names = _list_parsed_file_names(task_dirs)
-        result_collection_file_path = task_dirs['base'] / "result_collection.json"
+        # result_collection_file_path = task_dirs['base'] / "result_collection.json"
+        from .statistic_api import _get_task_record_from_tasks_json
+        task_record = _get_task_record_from_tasks_json(task_id)
+        scene_id = str(task_record.get("sceneId") or "default").strip()
+        result_collection_file_path = task_dirs['base'] / f"result_collection_{scene_id}.json"
         if not result_collection_file_path.exists():
             return jsonify(api_fail("此任务尚未提取和判别文件")), 401
         with result_collection_json_manager.file_lock:

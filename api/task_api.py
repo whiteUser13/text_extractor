@@ -63,6 +63,8 @@ def get_tasks():
                         "group_name": task.get("group_name", "unknown"),
                         "name": task.get("name", "未命名任务"),
                         "province": task.get("province", ""),  # 0317修改：任务列表接口返回省份
+                        "sceneId": task.get("sceneId", "default"),  # 添加场景ID
+                        "sceneName": task.get("sceneName", ""),  # 添加场景名称
                         "description": task.get("description", ""),
                         "extractionRules": task.get("extractionRules", []),
                         "judgmentRules": task.get("judgmentRules", []),
@@ -137,6 +139,8 @@ def create_task():
                 "createdBy": data.get("createdBy", 0),
                 "name": data.get("name"),
                 "province": province,  # 0317修改：保存省份到 tasks.json
+                "sceneId": data.get("sceneId", "default"),  # 添加场景ID
+                "sceneName": data.get("sceneName", ""),
                 "description": data.get("description", ""),
                 "extractionRules": data.get("extractionRules", []),
                 "judgmentRules": data.get("judgmentRules", []),
@@ -195,6 +199,8 @@ def update_task(task_id):
                 "name": update_task.get("name", tasks[task_index].get("name")),
                 "share": update_task.get("share",tasks[task_index].get("share")),
                 "province": province,  # 0317修改：更新任务时保存省份
+                "sceneId": update_task.get("sceneId", tasks[task_index].get("sceneId", "default")),  # 添加场景ID
+                "sceneName": update_task.get("sceneName", tasks[task_index].get("sceneName", "")),
                 "description": update_task.get("description", tasks[task_index].get("description")),
                 "extractionRules": update_task.get("extractionRules", tasks[task_index].get("extractionRules")),
                 "judgmentRules": update_task.get("judgmentRules", tasks[task_index].get("judgmentRules")),

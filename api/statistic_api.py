@@ -1,6 +1,3 @@
-# -*- coding: utf-8 -*-
-# airesult_api.py
-
 from flask import Blueprint, request, jsonify
 from pathlib import Path
 import json
@@ -13,7 +10,7 @@ import os
 import re  # 0316新增
 from utils.task_folder_utils import task_folder_utils
 from utils.auth_util import AuthUtils
-from utils.task_verify import task_permission_required
+from utils.task_verify import task_permission_required, scene_or_task_permission_required
 from utils.json_manager import ResultCollectionJsonFileManager
 
 statistic_bp = Blueprint("statistic", __name__)
@@ -132,18 +129,32 @@ def _get_task_root_from_task_dirs(task_dirs: dict):
     return None
 
 
-def _load_result_collection(task_id: str, task_dirs: dict = None) -> list:
+def _load_result_collection(task_id: str, task_dirs: dict = None, scene_id: str = None) -> list:
     """
-    0326修改：优先读取任务级汇总文件 result_collection.json，避免逐文件遍历大量 JSON。
+    0328修改：根据 sceneId 读取对应的 result_collection_{sceneid}.json 文件。
+    如果未提供 scene_id，则从 tasks.json 中获取。
+    如果 scene_id 无效，则返回空列表。
     """
     candidates = []
     try:
+        # 如果未提供 scene_id，从 tasks.json 中获取
+        if scene_id is None and task_id:
+            task_record = _get_task_record_from_tasks_json(task_id)
+            scene_id = str(task_record.get("sceneId") or "").strip()
+        
+        # 如果 scene_id 为空或无效，不创建文件，直接返回空
+        if not scene_id or scene_id == "None":
+            print(f"任务 {task_id} 的 sceneId 无效，返回空结果")
+            return []
+
+        filename = f"result_collection_{scene_id}.json"
+
         if task_dirs:
             task_root = _get_task_root_from_task_dirs(task_dirs)
             if task_root:
-                candidates.append(Path(task_root) / "result_collection.json")
+                candidates.append(Path(task_root) / filename)
         if task_id:
-            candidates.append(Path("data/tasks") / task_id / "result_collection.json")
+            candidates.append(Path("data/tasks") / task_id / filename)
         seen = set()
         for p in candidates:
             sp = str(p)
@@ -152,11 +163,11 @@ def _load_result_collection(task_id: str, task_dirs: dict = None) -> list:
             seen.add(sp)
             obj = _safe_load_json(p)
             if isinstance(obj, list):
-                return obj
-    except Exception:
+                return _extract_construction_year_from_collection(obj)
+    except Exception as e:
+        print(f"Error loading result collection: {str(e)}")
         return []
     return []
-
 
 def _normalize_collection_extraction_result(item: dict) -> dict:
     if not isinstance(item, dict):
@@ -258,40 +269,48 @@ def _normalize_name_for_match(name: str) -> str:
 
 def _normalize_collection_is_valid(item: dict) -> str:
     """
-    0327修改：地域分布/统计口径优先根据 judge_results 重新计算 legal/illegal，
-    避免 result_collection.json 中 is_valid 的布尔语义与后端解释不一致。
+    直接返回 result_collection.json 中的 is_valid 字段值，并做常见文本归一化。
     """
     if not isinstance(item, dict):
         return "unknown"
 
-    # 0327修改：优先根据 judge_results 重新计算
-    judge_result = _normalize_collection_judge_result(item)
-    if judge_result:
-        try:
-            return _compute_valid_from_judge(judge_result, None)
-        except Exception:
-            pass
-
-    # 兜底：再读 is_valid
     v = item.get("is_valid")
-
-    if isinstance(v, str):
-        s = v.strip().lower()
-        if s in ["legal", "illegal", "unknown"]:
-            return s
-        if s == "合规":
-            return "legal"
-        if s == "违规":
-            return "illegal"
-        if s == "未知":
-            return "unknown"
-        if s in ["true", "1", "yes"]:
-            return "legal"
-        if s in ["false", "0", "no"]:
-            return "illegal"
 
     if isinstance(v, bool):
         return "legal" if v else "illegal"
+
+    if isinstance(v, (int, float)):
+        # 0/1 映射（兼容老数据）
+        if v == 0:
+            return "legal"
+        if v == 1:
+            return "illegal"
+        return "unknown"
+
+    if isinstance(v, str):
+        s = v.strip()
+        s_lower = s.lower()
+
+        if s_lower in ["legal", "illegal", "unknown"]:
+            return s_lower
+
+        # 常见直接文本
+        # if "不违规" in s or "无违规" in s or "未违规" in s:
+        #     return "legal"
+        # if "违规" in s or "违法" in s or "不合规" in s:
+        #     # 关键词“违规”可能包含“不违规”、排除后再判断
+        #     if "不违规" in s or "无违规" in s or "未违规" in s:
+        #         return "legal"
+        #     return "illegal"
+
+        # 兼容“评审前违规建设情况”字段的多种书写
+        if re.search(r"评审前违规建设情况\s*[:：]\s*['\"“”‘’]?\s*否\s*['\"“”‘’]?", s):
+            return "legal"
+        if re.search(r"评审前违规建设情况\s*[:：]\s*['\"“”‘’]?\s*是\s*['\"“”‘’]?", s):
+            return "illegal"
+
+        # 其它直接归为 unknown，避免误把任意字符当非法
+        return "unknown"
 
     return "unknown"
 
@@ -462,72 +481,27 @@ def _extract_judge_for_file(dis_map: dict, file_name: str):
 
     # 成功结构：直接返回 dict（包含判别字段全集）
     return first, None
-
-
-def _sanitize_judge_result(judge_result: dict, max_rules_chars: int = 600):
-    """
-    判别成功样例 user_rules 非常长（会显著膨胀响应体）
-    - 默认：从 judge_result 中移除 user_rules
-    - 提供 user_rules_preview（截断）用于排障
-    """
-    if not isinstance(judge_result, dict):
-        return judge_result
-
-    jr = dict(judge_result)
-    rules = jr.pop("user_rules", None)
-    if isinstance(rules, str) and rules:
-        jr["user_rules_preview"] = rules[:max_rules_chars]
-
-    # 如果失败结构里有 raw_response（也可能很大），做同样处理
-    raw = jr.pop("raw_response", None)
-    if isinstance(raw, str) and raw:
-        jr["raw_response_preview"] = raw[:max_rules_chars]
-
-    return jr
-
-
+    # return "illegal"
 def _compute_valid_from_judge(judge_result: dict, judge_error: str):
     """
-    返回 valid: "legal"/"illegal"
-
-    强字段优先（来自判别成功样例）：
-      - 开发活动性质是否违规判定
-      - 历史建成情况判定
-      - 最终违规判定（AI判断过程+结果）
-      - 最终违规判定
+    返回 valid: "legal"/"illegal"/"unknown"。
+    基于用户逻辑：查找 judge_results，如果存在“评审前违规建设情况：'否'”，则为 legal；
+    如果存在“评审前违规建设情况：'是'”，则为 illegal。
     """
     if judge_error:
         return "illegal"
 
     if not isinstance(judge_result, dict) or not judge_result:
-        return "illegal"
+        return "unknown"
 
-    strong_keys = [
-        "开发活动性质是否违规判定",
-        "历史建成情况判定",
-        "最终违规判定（AI判断过程+结果）",
-        "最终违规判定",
-    ]
-    for k in strong_keys:
-        v = judge_result.get(k)
-        if isinstance(v, str) and v.strip():
-            txt = v.strip()
-            # 典型： "违规；..." / "不违规；..." / "判断结果：违规建设"
-            if txt.startswith("违规") or ("判断结果：违规" in txt) or ("违规建设" in txt):
-                return "illegal"
-            if txt.startswith("不违规") or txt.startswith("无违规") or ("判断结果：不违规" in txt):
-                return "legal"
-
-    # 兜底：关键词扫描（防字段名变更）
     blob = json.dumps(judge_result, ensure_ascii=False)
-    if ("不违规" in blob) or ("无违规" in blob):
+
+    if re.search(r"评审前违规建设情况\s*[:：]\s*['\"“”‘’]?\s*否\s*['\"“”‘’]?", blob):
         return "legal"
-    if ("违规" in blob) or ("违法" in blob) or ("不合规" in blob):
+    if re.search(r"评审前违规建设情况\s*[:：]\s*['\"“”‘’]?\s*是\s*['\"“”‘’]?", blob):
         return "illegal"
 
-    # 默认保守：无法判定则 illegal
-    return "illegal"
-
+    return "unknown"
 
 def _extract_province_from_string(text: str) -> str:
     """
@@ -614,25 +588,7 @@ def _get_task_name_from_tasks_json(task_id: str) -> str:
     except Exception:
         return task_id
 
-        print(f"读取 tasks.json: {tasks_json_path}")
-
-        with open(tasks_json_path, "r", encoding="utf-8") as f:
-            tasks = json.load(f)
-
-        print(f"成功读取 tasks.json, 包含 {len(tasks)} 个任务")
-
-        # 查找匹配的任务
-        for task in tasks:
-            current_id = task.get("id")
-            current_name = task.get("name")
-
-            if current_id == task_id:
-                task_name = current_name or task_id
-                print(f"找到匹配的任务: ID={current_id}, 名称={task_name}")
-                return task_name
-
-        print(f"未找到任务 ID {task_id} 对应的名称")
-        return task_id
+        
     except Exception as e:
         print(f"读取 tasks.json 失败: {e}")
         import traceback
@@ -707,6 +663,7 @@ def _load_all_tasks() -> list:
                             "province": str(t.get("province") or "").strip(),
                             "extractionRules": t.get("extractionRules") if isinstance(t.get("extractionRules"),
                                                                                       list) else [],
+                            "sceneId": str(t.get("sceneId") or "").strip(),  # ✅ 添加这一行
                             "judgmentRules": t.get("judgmentRules") if isinstance(t.get("judgmentRules"), list) else [],
                         })
                     return out
@@ -742,6 +699,30 @@ def _get_task_province_from_tasks_json(task_id: str) -> str:
         return province
     except Exception:
         return ""
+
+
+def _get_tasks_by_scene(scene_id: str) -> list:
+    """
+    0328修改：根据 scene_id 返回相同场景的所有任务 ID 列表
+    """
+    print(f"查找场景ID: '{scene_id}'")
+    print(f"所有任务的sceneId: {[str(t.get('sceneId', 'None')) for t in _load_all_tasks()]}")
+    try:
+        scene_id = (scene_id or "").strip()
+        if not scene_id:
+            return []
+        
+        tasks = _load_all_tasks()
+        task_ids = []
+        for t in tasks:
+            if str(t.get("id") or "").strip():  # 确保有 id
+                task_scene_id = str(t.get("sceneId") or "").strip()
+                if task_scene_id == scene_id:
+                    task_ids.append(str(t.get("id")).strip())
+        
+        return task_ids
+    except Exception:
+        return []
 
 
 def _extract_explicit_confidence(judge_result: dict):
@@ -900,16 +881,23 @@ def _get_triggered_violation_fields(judge_result: dict, task_dirs: dict = None) 
     return hits
 
 
-def _compute_task_region_stat(task_id: str, task_name: str = "") -> dict:
+def _compute_task_region_stat(task_id: str, task_name: str = "", scene_id: str = None) -> dict:
     """
-    0326修改：单任务省份统计只基于 result_collection.json。
+    0328修改：支持scene_id参数，用于场景聚合统计。
     province 暂时从 tasks.json 读取。
     """
     task_dirs = task_folder_utils.get_task_dirs(task_id)
-    collection = _load_result_collection(task_id, task_dirs)
+    collection = _load_result_collection(task_id, task_dirs, scene_id)
     province = _get_task_province_from_tasks_json(task_id) or _extract_province_from_string(task_name or "") or "其他地区"
-
-    stat = {"province": province, "count": len(collection), "illegal_count": 0, "legal_count": 0}
+    industry_violation_count = _get_industry_violation_count_from_collection(collection, task_dirs)
+    stat = {
+        "province": province, 
+        "count": len(collection), 
+        "illegal_count": 0, 
+        "legal_count": 0,
+        "industry_violation_count": industry_violation_count,
+        # "construction_date":construction_year
+    }
     for item in collection:
         valid = _normalize_collection_is_valid(item)
         if valid == "illegal":
@@ -1243,41 +1231,154 @@ def _get_confidence_from_judge(judge_result: dict) -> int:
         pass
 
     return _clamp_confidence(score)
+def _get_industry_violation_count_from_collection(collection: list, task_dirs: dict = None) -> int:
+    """
+    计算违规文件中涉及重点行业的数量
+    """
+    industry_violation_count = 0
+    
+    for item in collection:
+        judge_result = _normalize_collection_judge_result(item)
+        if not judge_result:
+            continue
+            
+        # 检查是否违规
+        valid_status = _normalize_collection_is_valid(item)
+        if valid_status != "illegal":
+            continue
+            
+        # 获取行业类别编码及重点行业判断字段
+        industry_field = None
+        for key in ["行业类别编码及重点行业判断", "【行业类别编码及重点行业判断】"]:
+            if key in judge_result:
+                industry_field = judge_result[key]
+                break
+        
+        if industry_field and isinstance(industry_field, str):
+            # 如果包含"涉及重点行业"则为True
+            if "涉及重点行业" in industry_field:
+                industry_violation_count += 1
+            # 如果包含"不涉及重点行业"或"未找到规则要求的相关内容"则为False
+            elif "不涉及重点行业" in industry_field or "未找到规则要求的相关内容" in industry_field:
+                continue
+    
+    return industry_violation_count
+def _extract_construction_year(judge_result: dict) -> int:
+    """
+    从 judge_results 中提取动工时间判定的年份
+    通常格式为 "正式动工时间为2019年"，只提取年份数字
+    """
+    if not isinstance(judge_result, dict):
+        return 0
+    
+    # 查找动工时间判定字段
+    construction_field = None
+    for key in ["动工时间判定", "【动工时间判定】"]:
+        if key in judge_result:
+            construction_field = judge_result[key]
+            break
+    
+    if not construction_field or not isinstance(construction_field, str):
+        return 0
+    
+    # 使用正则表达式提取年份（4位数字）
+    import re
+    year_match = re.search(r'(\d{4})', construction_field)
+    if year_match:
+        try:
+            year = int(year_match.group(1))
+            # 确保是合理的年份（1900-2100）
+            if 1900 <= year <= 2100:
+                return year
+        except ValueError:
+            pass
+    
+    return 0
 
-
+def _extract_construction_year_from_collection(collection: list) -> list:
+    """
+    为 collection 中的每个项目添加 construction_date 字段
+    """
+    updated_collection = []
+    for item in collection:
+        new_item = dict(item)  # 创建副本
+        
+        # 提取 judge_results
+        judge_result = _normalize_collection_judge_result(item)
+        if judge_result:
+            construction_year = _extract_construction_year(judge_result)
+            new_item["construction_date"] = construction_year
+        else:
+            new_item["construction_date"] = 0
+            
+        updated_collection.append(new_item)
+    
+    return updated_collection
 # ==================== 新增统计接口 ====================
 
 # 5) /airesult/statistics/overview - 获取任务统计数据概览
 @statistic_bp.get("/statistics/overview")
 @AuthUtils.token_required
-@task_permission_required()
+@scene_or_task_permission_required()
 def airesult_statistics_overview():
     """
-    0326修改：任务统计概览只基于 result_collection.json。
+    0328修改：支持按 task_id（单任务统计）或 sceneId（场景聚合统计）。
     """
     try:
         task_id = (request.args.get("task_id") or "").strip()
-        if not task_id:
-            return jsonify(api_fail("缺少task_id")), 400
-
-        task_dirs = task_folder_utils.get_task_dirs(task_id)
-        collection = _load_result_collection(task_id, task_dirs)
-
-        total_files = len(collection)
-        extracted_files = sum(1 for item in collection if bool(item.get("is_extracted")))
-        judged_files = sum(1 for item in collection if bool(item.get("is_judged")))
-        reviewed_files = sum(1 for item in collection if bool(item.get("is_reviewed")))
-
+        scene_id = (request.args.get("scene_id") or "").strip()
+        
+        # 如果两个都提供，优先使用 task_id
+        task_ids = []
+        if task_id:
+            task_ids = [task_id]
+        elif scene_id:
+            task_ids = _get_tasks_by_scene(scene_id)
+        else:
+            return jsonify(api_fail("缺少task_id或scene_id")), 400
+        
+        if not task_ids:
+            # 没有任务，返回空统计
+            return jsonify(api_ok({
+                "total_files": 0,
+                "extracted_files": 0,
+                "judged_files": 0,
+                "reviewed_files": 0,
+                "violation_types": [],
+                "field_extraction_rate": [],
+            }))
+        
+        # 聚合所有任务的统计数据
+        total_files = 0
+        extracted_files = 0
+        judged_files = 0
+        reviewed_files = 0
         violation_counter = Counter()
-        for item in collection:
-            judge_result = _normalize_collection_judge_result(item)
-            if not judge_result:
-                continue
-            for f in _get_triggered_violation_fields(judge_result, task_dirs):
-                violation_counter[f] += 1
+        all_collections = []
+        
+        for tid in task_ids:
+            task_dirs = task_folder_utils.get_task_dirs(tid)
+            # 修复：只有 scene_id 存在时才传递，否则不传，避免空字符串过滤数据
+            if scene_id:
+                collection = _load_result_collection(tid, task_dirs, scene_id)
+            else:
+                collection = _load_result_collection(tid, task_dirs)
+            all_collections.extend(collection)
+            
+            total_files += len(collection)
+            extracted_files += sum(1 for item in collection if bool(item.get("is_extracted")))
+            judged_files += sum(1 for item in collection if bool(item.get("is_judged")))
+            reviewed_files += sum(1 for item in collection if bool(item.get("is_reviewed")))
+            
+            for item in collection:
+                judge_result = _normalize_collection_judge_result(item)
+                if not judge_result:
+                    continue
+                for f in _get_triggered_violation_fields(judge_result, task_dirs):
+                    violation_counter[f] += 1
 
         violation_types = [{"type": k, "count": v} for k, v in violation_counter.most_common()]
-        field_extraction_rate = _get_field_extraction_rate_from_collection(collection, task_dirs)
+        field_extraction_rate = _get_field_extraction_rate_from_collection(all_collections, None)
 
         result = {
             "total_files": total_files,
@@ -1295,24 +1396,35 @@ def airesult_statistics_overview():
 # 6) /airesult/statistics/violation-types
 @statistic_bp.get("/statistics/violation-types")
 @AuthUtils.token_required
-@task_permission_required()
+@scene_or_task_permission_required()
 def airesult_statistics_violation_types():
-    """0326修改：违规类型统计只基于 result_collection.json。"""
+    """0328修改：支持按 task_id 或 sceneId 的违规类型统计。"""
     try:
         task_id = (request.args.get("task_id") or "").strip()
-        if not task_id:
-            return jsonify(api_fail("缺少task_id")), 400
-
-        task_dirs = task_folder_utils.get_task_dirs(task_id)
-        collection = _load_result_collection(task_id, task_dirs)
+        scene_id = (request.args.get("scene_id") or "").strip()
+        
+        task_ids = []
+        if task_id:
+            task_ids = [task_id]
+        elif scene_id:
+            task_ids = _get_tasks_by_scene(scene_id)
+        else:
+            return jsonify(api_fail("缺少task_id或scene_id")), 400
+        
+        if not task_ids:
+            return jsonify(api_ok([]))
+        
         violation_counter = Counter()
-
-        for item in collection:
-            judge_result = _normalize_collection_judge_result(item)
-            if not judge_result:
-                continue
-            for f in _get_triggered_violation_fields(judge_result, task_dirs):
-                violation_counter[f] += 1
+        for tid in task_ids:
+            task_dirs = task_folder_utils.get_task_dirs(tid)
+            collection = _load_result_collection(tid, task_dirs, scene_id)
+            
+            for item in collection:
+                judge_result = _normalize_collection_judge_result(item)
+                if not judge_result:
+                    continue
+                for f in _get_triggered_violation_fields(judge_result, task_dirs):
+                    violation_counter[f] += 1
 
         result = [{"type": k, "count": v} for k, v in violation_counter.most_common()]
         return jsonify(api_ok(result))
@@ -1322,103 +1434,144 @@ def airesult_statistics_violation_types():
 # 7) /airesult/statistics/field-rate - 获取字段提取率统计
 @statistic_bp.get("/statistics/field-rate")
 @AuthUtils.token_required
-@task_permission_required()
+@scene_or_task_permission_required()
 def airesult_statistics_field_rate():
-    """0326修改：字段提取率只基于 result_collection.json。"""
+    """0328修改：支持按 task_id 或 sceneId 的字段提取率统计。"""
     try:
         task_id = (request.args.get("task_id") or "").strip()
-        if not task_id:
-            return jsonify(api_fail("缺少task_id")), 400
-        task_dirs = task_folder_utils.get_task_dirs(task_id)
-        collection = _load_result_collection(task_id, task_dirs)
-        result = _get_field_extraction_rate_from_collection(collection, task_dirs)
+        scene_id = (request.args.get("scene_id") or "").strip()
+        
+        task_ids = []
+        if task_id:
+            task_ids = [task_id]
+        elif scene_id:
+            task_ids = _get_tasks_by_scene(scene_id)
+        else:
+            return jsonify(api_fail("缺少task_id或scene_id")), 400
+        
+        if not task_ids:
+            return jsonify(api_ok([]))
+        
+        all_collections = []
+        for tid in task_ids:
+            task_dirs = task_folder_utils.get_task_dirs(tid)
+            collection = _load_result_collection(tid, task_dirs, scene_id)
+            all_collections.extend(collection)
+        
+        result = _get_field_extraction_rate_from_collection(all_collections, None)
         return jsonify(api_ok(result))
     except Exception:
         return jsonify(api_fail(traceback.format_exc())), 500
 
 # 8) /airesult/statistics/clues - 获取线索清单
+
 @statistic_bp.get("/statistics/clues")
 @AuthUtils.token_required
-@task_permission_required()
+@scene_or_task_permission_required()
 def airesult_statistics_clues():
-    """0326修改：线索清单优先基于 result_collection.json。"""
+    """0328修改：支持按 task_id 或 sceneId 的线索清单统计。"""
     try:
         task_id = (request.args.get("task_id") or "").strip()
+        scene_id = (request.args.get("scene_id") or "").strip()
         page = int(request.args.get("page", 1))
         page_size = int(request.args.get("page_size", 10))
-        if not task_id:
-            return jsonify(api_fail("缺少task_id")), 400
-        task_dirs = task_folder_utils.get_task_dirs(task_id)
-        collection = _load_result_collection(task_id, task_dirs)
-        clues = []
-        if collection:
-            for item in collection:
-                judge_result = _normalize_collection_judge_result(item)
-                if not judge_result:
-                    continue
-                file_name = _resolve_preview_file_name(task_dirs, item)  # 0327修改：返回结果预览链路可识别的文件名
-                final_valid = _normalize_collection_is_valid(item)
-                final_confidence = _get_confidence_from_judge(judge_result)
-                confidence_source = "explicit" if _extract_explicit_confidence(
-                    judge_result) is not None else "rule_based"
-                created_at = _normalize_collection_update_time(item)
-                for field_name in _get_triggered_violation_fields(judge_result):
-                    clue_confidence = _get_clue_confidence(judge_result, field_name)  # 0327修改：线索级置信度按字段单独计算
-                    id_str = f"{task_id}_{file_name}_{field_name}"
-                    clue_id = hashlib.md5(id_str.encode()).hexdigest()[:8]
-                    clues.append({
-                        "id": clue_id,
-                        "file_name": file_name,
-                        "violation_type": field_name,
-                        "field_name": field_name,
-                        "confidence": clue_confidence,
-                        "final_confidence": final_confidence,
-                        "confidence_source": confidence_source,
-                        "created_at": created_at,
-                        "final_valid": final_valid,
-                    })
-            clues.sort(key=lambda x: (-x["confidence"], x["file_name"], x["field_name"]))
-            total = len(clues)
-            start = (page - 1) * page_size
-            end = start + page_size
-            return jsonify(api_ok({"total": total, "items": clues[start:end]}))
-        file_names = _list_parsed_file_names(task_dirs)
-        clues = []
-        for fn in file_names:
-            dis_path, dis_obj = _find_discrimination_json(task_dirs, fn)
-            if not (dis_path and dis_obj):
-                continue
-            dis_map, dis_err = _parse_discrimination_json(dis_obj)
-            if dis_err:
-                continue
-            judge_result, judge_error = _extract_judge_for_file(dis_map, fn)
-            if judge_error:
-                continue
-            valid = _compute_valid_from_judge(judge_result, None)
-            if valid == "illegal":
-                violation_type = _extract_violation_type(judge_result, task_dirs)
-                confidence = _get_confidence_from_judge(judge_result)
-                field_name = "关键字段"
-                for key in ["违规字段", "violation_field", "违规内容", "具体违规"]:
-                    if judge_result.get(key):
-                        field_name = str(judge_result.get(key))
-                        break
-                if field_name == "关键字段":
-                    field_name = violation_type
-                clue_id = hashlib.md5(f"{task_id}_{fn}_{field_name}".encode()).hexdigest()[:8]
-                clues.append({
-                    "id": clue_id,
-                    "file_name": fn,
-                    "violation_type": violation_type,
-                    "field_name": field_name,
-                    "confidence": confidence,
-                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
-        clues.sort(key=lambda x: x["confidence"], reverse=True)
-        total = len(clues)
+        
+        if not task_id and not scene_id:
+            return jsonify(api_fail("缺少task_id或scene_id")), 400
+        
+        task_ids = []
+        if task_id:
+            task_ids = [task_id]
+        elif scene_id:
+            task_ids = _get_tasks_by_scene(scene_id)
+            if not task_ids:
+                return jsonify(api_fail("场景中没有找到任务")), 400
+        
+        # 合并所有任务的线索数据
+        all_clues = []
+        for tid in task_ids:
+            task_dirs = task_folder_utils.get_task_dirs(tid)
+            if scene_id:
+                collection = _load_result_collection(tid, task_dirs, scene_id)
+            else:
+                collection = _load_result_collection(tid, task_dirs)
+            if collection:
+                for item in collection:
+                    judge_result = _normalize_collection_judge_result(item)
+                    if not judge_result:
+                        continue
+                    file_name = _resolve_preview_file_name(task_dirs, item)  # 0327修改：返回结果预览链路可识别的文件名
+                    final_valid = _normalize_collection_is_valid(item)
+                    final_confidence = _get_confidence_from_judge(judge_result)
+                    confidence_source = "explicit" if _extract_explicit_confidence(
+                        judge_result) is not None else "rule_based"
+                    created_at = _normalize_collection_update_time(item)
+                    for field_name in _get_triggered_violation_fields(judge_result):
+                        clue_confidence = _get_clue_confidence(judge_result, field_name)  # 0327修改：线索级置信度按字段单独计算
+                        id_str = f"{tid}_{file_name}_{field_name}"
+                        clue_id = hashlib.md5(id_str.encode()).hexdigest()[:8]
+                        all_clues.append({
+                            "id": clue_id,
+                            "task_id": tid,
+                            "task_name": _get_task_name_from_tasks_json(tid),
+                            "file_name": file_name,
+                            "violation_type": field_name,
+                            "field_name": field_name,
+                            "confidence": clue_confidence,
+                            "final_confidence": final_confidence,
+                            "confidence_source": confidence_source,
+                            "created_at": created_at,
+                            "final_valid": final_valid,
+                        })
+        
+        # 如果没有从result_collection获取到数据，回退到旧逻辑
+        if not all_clues:
+            for tid in task_ids:
+                task_dirs = task_folder_utils.get_task_dirs(tid)
+                file_names = _list_parsed_file_names(task_dirs)
+                for fn in file_names:
+                    dis_path, dis_obj = _find_discrimination_json(task_dirs, fn)
+                    if not (dis_path and dis_obj):
+                        continue
+                    dis_map, dis_err = _parse_discrimination_json(dis_obj)
+                    if dis_err:
+                        continue
+                    judge_result, judge_error = _extract_judge_for_file(dis_map, fn)
+                    if judge_error:
+                        continue
+                    valid = _compute_valid_from_judge(judge_result, None)
+                    if valid == "illegal":
+                        violation_type = _extract_violation_type(judge_result, task_dirs)
+                        confidence = _get_confidence_from_judge(judge_result)
+                        field_name = "关键字段"
+                        for key in ["违规字段", "violation_field", "违规内容", "具体违规"]:
+                            if judge_result.get(key):
+                                field_name = str(judge_result.get(key))
+                                break
+                        if field_name == "关键字段":
+                            field_name = violation_type
+                        clue_id = hashlib.md5(f"{tid}_{fn}_{field_name}".encode()).hexdigest()[:8]
+                        all_clues.append({
+                            "id": clue_id,
+                            "task_id": tid,
+                            "task_name": _get_task_name_from_tasks_json(tid),
+                            "file_name": fn,
+                            "violation_type": violation_type,
+                            "field_name": field_name,
+                            "confidence": confidence,
+                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
+        
+        all_clues.sort(key=lambda x: (-x["confidence"], x["file_name"], x["field_name"]))
+        total = len(all_clues)
         start = (page - 1) * page_size
         end = start + page_size
-        return jsonify(api_ok({"total": total, "items": clues[start:end]}))
+        
+        return jsonify(api_ok({
+            "total": total, 
+            "items": all_clues[start:end],
+            "task_ids": task_ids
+        }))
     except Exception:
         return jsonify(api_fail(traceback.format_exc())), 500
 
@@ -1427,23 +1580,46 @@ def airesult_statistics_clues():
 
 @statistic_bp.get("/statistics/region-distribution")
 @AuthUtils.token_required
-@task_permission_required()
+@scene_or_task_permission_required()
 def airesult_statistics_region_distribution():
     """
-    0326修改：地域分布只基于各任务的 result_collection.json。
+    0328修改：支持按 task_id（单任务统计）或 sceneId（场景聚合统计）。
     province 暂时从 tasks.json 读取，这只会读取一个很小的配置文件，不会造成性能瓶颈。
     """
     try:
         task_id = (request.args.get("task_id") or "").strip()
-        if not task_id:
-            return jsonify(api_fail("缺少task_id")), 400
+        scene_id = (request.args.get("scene_id") or "").strip()
+        
+        if not task_id and not scene_id:
+            return jsonify(api_fail("缺少task_id或scene_id")), 400
 
         tasks = _load_all_tasks()
-        current_task_name = _get_task_name_from_tasks_json(task_id)
+        
+        # 如果提供了 scene_id，使用场景聚合逻辑
+        if scene_id:
+            current_scene_id = scene_id
+            # 找到场景中的第一个任务作为"当前任务"
+            scene_tasks = [t for t in tasks if str(t.get("sceneId") or "").strip() == scene_id]
+            if not scene_tasks:
+                return jsonify(api_fail("场景中没有找到任务")), 400
+            
+            current_task = scene_tasks[0]
+            task_id = str(current_task.get("id")).strip()
+            current_task_name = str(current_task.get("name") or task_id).strip()
+        else:
+            # 单任务模式
+            current_task_name = _get_task_name_from_tasks_json(task_id)
+            # 获取当前任务的 sceneId
+            current_scene_id = None
+            for t in tasks:
+                if str(t.get("id") or "").strip() == task_id:
+                    current_scene_id = str(t.get("sceneId") or "default").strip()
+                    break
+        
         current_province = _get_task_province_from_tasks_json(task_id) or _extract_province_from_string(
             current_task_name) or "其他地区"
-
-        current_task_stat = _compute_task_region_stat(task_id, current_task_name)
+        
+        current_task_stat = _compute_task_region_stat(task_id, current_task_name, current_scene_id)
         current_task_stat.update({
             "is_current_task": True,
             "current_task_id": task_id,
@@ -1456,7 +1632,11 @@ def airesult_statistics_region_distribution():
             tname = t.get("name") or tid
             if not tid:
                 continue
-            one = _compute_task_region_stat(tid, tname)
+            # 只统计相同场景的任务
+            task_scene_id = str(t.get("sceneId") or "default").strip()
+            if task_scene_id != current_scene_id:
+                continue
+            one = _compute_task_region_stat(tid, tname, current_scene_id)
             prov = one.get("province") or "其他地区"
             if prov not in agg:
                 agg[prov] = {
@@ -1464,6 +1644,7 @@ def airesult_statistics_region_distribution():
                     "count": 0,
                     "illegal_count": 0,
                     "legal_count": 0,
+                    "industry_violation_count": 0,
                     "is_current_task": False,
                     "current_task_id": "",
                     "current_task_name": "",
@@ -1471,6 +1652,7 @@ def airesult_statistics_region_distribution():
             agg[prov]["count"] += int(one.get("count", 0) or 0)
             agg[prov]["illegal_count"] += int(one.get("illegal_count", 0) or 0)
             agg[prov]["legal_count"] += int(one.get("legal_count", 0) or 0)
+            agg[prov]["industry_violation_count"] += int(one.get("industry_violation_count", 0) or 0)
 
         if current_province not in agg:
             agg[current_province] = {
@@ -1478,6 +1660,7 @@ def airesult_statistics_region_distribution():
                 "count": int(current_task_stat.get("count", 0) or 0),
                 "illegal_count": int(current_task_stat.get("illegal_count", 0) or 0),
                 "legal_count": int(current_task_stat.get("legal_count", 0) or 0),
+                "industry_violation_count": int(current_task_stat.get("industry_violation_count", 0) or 0),
                 "is_current_task": True,
                 "current_task_id": task_id,
                 "current_task_name": current_task_name,
