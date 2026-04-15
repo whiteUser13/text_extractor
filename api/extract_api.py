@@ -14,6 +14,32 @@ extract_bp = Blueprint("extract", __name__)
 # 页面索引未知的默认值
 PAGE_IDX_UNKNOWN = -1
 
+def _get_task_record_from_tasks_json(task_id: str) -> dict:
+    """
+    从 tasks.json 获取单个任务完整配置记录。
+    """
+    try:
+        task_id = (task_id or "").strip()
+        if not task_id:
+            return {}
+        
+        tasks_file = Path("data/tasks/tasks.json")
+        if not tasks_file.exists():
+            return {}
+        
+        with open(tasks_file, 'r', encoding='utf-8') as f:
+            tasks = json.load(f)
+        
+        if not isinstance(tasks, list):
+            return {}
+            
+        for t in tasks:
+            if str(t.get("id") or "").strip() == task_id:
+                return t if isinstance(t, dict) else {}
+        return {}
+    except Exception:
+        return {}
+
 def _get_pk(file_path_or_name):
     """
     从文件路径或文件名提取主键(地块编码)。
@@ -130,7 +156,12 @@ def task_extract_content(task_id):
         os.makedirs(extraction_dir, exist_ok=True)
 
         tracker = StatusTracker(task_id)
-        result_collection_file_path = task_dirs["base"] / "result_collection.json"
+        
+        # 获取任务的 sceneId 并构造文件名
+        task_record = _get_task_record_from_tasks_json(task_id)
+        scene_id = str(task_record.get("sceneId") or "default").strip()
+        filename = f"result_collection_{scene_id}.json"
+        result_collection_file_path = task_dirs["base"] / filename
 
         try:
             from utils.content_extraction import custom_extraction, extract_single_markdown_file, extract_single_json_file
@@ -154,7 +185,8 @@ def task_extract_content(task_id):
                             str(file_path),
                             extraction_rules,
                             str(extraction_dir),
-                            result_collection_file_path
+                            result_collection_file_path,
+                            task_id  # 传递 task_id 参数
                         )
 
                     if result.get("success"):

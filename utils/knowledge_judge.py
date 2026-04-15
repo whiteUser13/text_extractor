@@ -31,7 +31,9 @@ class KnowledgeEnhancedValidator:
         normal_rules = []
         
         for rule in judgment_rules:
-            if rule.get('knowledgeBase') and rule.get('sourceFields'):
+            kb = rule.get('knowledgeBase', '').strip()
+            sf = rule.get('sourceFields', [])
+            if kb and kb.lower() != 'none' and sf and len(sf) > 0:  # Excludes rules with "none" as knowledgeBase# 确保 knowledgeBase 不为空且 sourceFields 不为空列表
                 knowledge_rules.append(rule)
             else:
                 normal_rules.append(rule)
@@ -191,60 +193,7 @@ class KnowledgeEnhancedValidator:
             print(f"读取知识库文件失败 {file_name}: {e}")
             return ""
     
-    # def _combine_rules_with_knowledge(self, normal_rules, knowledge_rules, processed_results, file_name):
-    #     """
-    #     为单个文件构建最终 prompt（包含知识库部分和普通规则部分），严格按照用户期望结构：
-    #     需要结合知识库进行判别：
 
-    #     【规则1】: 描述
-    #     【规则2】: 描述
-
-    #     知识库参考内容：
-
-    #     内容1
-    #     内容2
-
-    #     需要提取或判别的字段：
-
-    #     【普通规则1】: 描述
-    #     【普通规则2】: 描述
-    #     """
-    #     # 构建 knowledge rules block (rule lines)
-    #     kb_rule_lines = []
-    #     for r in (knowledge_rules or []):
-    #         name = (r.get("name") or "").strip()
-    #         desc = (r.get("description") or "").strip()
-    #         if name:
-    #             kb_rule_lines.append(f"【{name}】: {desc}")
-        
-    #     # 读取该文件对应的知识库纯内容（只取 content 字段）
-    #     knowledge_text = self._load_knowledge_for_file(file_name, knowledge_rules) if knowledge_rules else ""
-
-    #     prompt_parts = []
-
-    #     if kb_rule_lines:
-    #         kb_section = "需要结合知识库进行判别：\n\n" + "\n".join(kb_rule_lines)
-    #         if knowledge_text:
-    #             kb_section += "\n\n知识库参考内容：\n\n" + knowledge_text
-    #         prompt_parts.append(kb_section)
-
-    #     # 普通规则部分
-    #     normal_lines = []
-    #     for r in (normal_rules or []):
-    #         name = (r.get("name") or "").strip()
-    #         desc = (r.get("description") or "").strip()
-    #         if name:
-    #             normal_lines.append(f"【{name}】: {desc}")
-        
-    #     if normal_lines:
-    #         normal_section = "需要提取或判别的字段：\n\n" + "\n".join(normal_lines)
-    #         prompt_parts.append(normal_section)
-
-    #     final_prompt = "\n\n".join(prompt_parts).strip()
-    #     print(f"\n===== 为文件 {file_name} 生成的 Prompt（前800字符） =====")
-    #     print(final_prompt[:800])
-    #     print("=" * 50 + "\n")
-    #     return final_prompt
     def _combine_rules_with_knowledge(self, normal_rules, knowledge_rules, processed_results, file_name):
         """ 
         为单个文件构建最终 prompt（包含知识库部分和普通规则部分），将知识库内容与对应规则关联

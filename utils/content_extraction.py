@@ -1359,7 +1359,7 @@ def extract_content_from_json(json_content, extraction_rules, folder_name, filen
         )
 
         # 4. 调用大模型进行内容提取
-        result_text = deepseek_v3_guangzhou(user_content)
+        result_text = deepseek_generate_stream(user_content)
 
         if not result_text:
             print(f"❌ API调用失败，返回'未找到'结果")
@@ -1473,7 +1473,7 @@ def extract_content_from_json(json_content, extraction_rules, folder_name, filen
         return [error_data], error_page_idx
 
 
-def extract_single_json_file(json_file_path, extraction_rules, output_dir,result_collection_file_path):
+def extract_single_json_file(json_file_path, extraction_rules, output_dir, result_collection_file_path, task_id=None):
     """处理单个JSON文件 - 生成包含元信息和page_idx的提取结果，page_idx保存在外部结构中"""
     try:
         folder_name = os.path.basename(os.path.dirname(json_file_path))
@@ -1519,8 +1519,29 @@ def extract_single_json_file(json_file_path, extraction_rules, output_dir,result
         with open(json_output_path, "w", encoding="utf-8") as f:
             json.dump(full_result, f, ensure_ascii=False, indent=2)
         result_collection_json_manager = ResultCollectionJsonFileManager()
+        # if not result_collection_file_path.exists():
+        # import json
+        # from pathlib import Path
+
+        # 从 tasks.json 获取 scene_id
+        tasks_file = Path("data/tasks/tasks.json")
+        scene_id = "default"
+        if tasks_file.exists():
+            try:
+                with open(tasks_file, "r", encoding="utf-8") as f:
+                    tasks = json.load(f)
+                    for task in tasks:
+                        if str(task.get("id")) == task_id:
+                            scene_id = str(task.get("sceneId") or "default").strip()
+                            break
+            except Exception:
+                pass
+
+        result_collection_file_path = Path(result_collection_file_path).parent / f"result_collection_{scene_id}.json"
+
         if not result_collection_file_path.exists():
             result_collection_file_path.write_text("[]", encoding="utf-8")
+
         with result_collection_json_manager.file_lock:
             collections = result_collection_json_manager.load_json_without_lock(result_collection_file_path)
             is_extracted = False
@@ -2289,7 +2310,7 @@ def deepseek_generate_stream(
     """
     流式调用API
     """
-    api_key = "sk-61c86b0083fe4aa99b216691ac8e8cec"
+    api_key = "sk-ad2be9fb1aa44429b8895806809ab2a5"
     client = OpenAI(
         api_key=api_key,
         base_url="https://api.deepseek.com")
@@ -2535,7 +2556,7 @@ def extract_content_from_markdown(markdown_content, extraction_rules, folder_nam
         )
 
         print(f"\n=== 调用大模型进行内容提取 ===")
-        result_text = deepseek_v3_guangzhou(user_content)
+        result_text = deepseek_generate_stream(user_content)
 
         if not result_text:
             print(f"❌ API调用失败，返回'未找到'结果")
@@ -2728,14 +2749,16 @@ def process_markdown_with_custom_rules(md_dir, output_dir, extraction_rules):
         return False
 
 
-def process_file_with_rules(file_path, extraction_rules, output_dir):
+def process_file_with_rules(file_path, extraction_rules, output_dir, task_id=None):
     """根据文件类型选择相应的处理函数"""
     file_ext = os.path.splitext(file_path)[1].lower()
 
     if file_ext == '.md':
         return extract_single_markdown_file(file_path, extraction_rules, output_dir)
     elif file_ext == '.json':
-        return extract_single_json_file(file_path, extraction_rules, output_dir)
+        # 如果没有 task_id，使用默认路径
+        result_collection_path = Path(output_dir).parent / "result_collection_default.json"
+        return extract_single_json_file(file_path, extraction_rules, output_dir, result_collection_path, task_id)
     else:
         print(f"❌ 不支持的文件类型: {file_ext}")
         return {

@@ -34,8 +34,29 @@ def task_discriminate_content(task_id):
 
         # 获取任务目录
         task_dirs = task_folder_utils.get_task_dirs(task_id)
-        result_collection_file_path = task_dirs["base"] / "result_collection.json"
+        
+        # 智能获取 sceneId：优先从 tasks.json 获取，如果不存在则从已有文件推断
+        from .statistic_api import _get_task_record_from_tasks_json
+        task_record = _get_task_record_from_tasks_json(task_id)
+        scene_id = str(task_record.get("sceneId") or "").strip()
+        
+        if not scene_id:
+            # 查找所有 result_collection_*.json 文件
+            existing_files = list(task_dirs["base"].glob("result_collection_*.json"))
+            if existing_files:
+                # 优先选择非 default 的文件
+                non_default_files = [f for f in existing_files if "default" not in f.name]
+                if non_default_files:
+                    scene_id = non_default_files[0].stem.replace("result_collection_", "")
+                else:
+                    scene_id = "default"
+            else:
+                # 如果没有现有文件，使用 default
+                scene_id = "default"
+        
 
+        result_collection_file_path = task_dirs["base"] / f"result_collection_{scene_id}.json"
+        print(f"🔍 [DEBUG judge_api] result_collection_file_path: {result_collection_file_path}")
         # 检查提取结果目录
         extraction_dir = task_dirs["extraction_results"]
         if not extraction_dir.exists():

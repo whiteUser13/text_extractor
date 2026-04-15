@@ -214,7 +214,7 @@ class AIValidator:
 
         # 常见的乱码模式映射（UTF-8被误认为是Latin-1）
         encoding_fixes = {
-            'åæç»æ': '分析结果',
+            'åæç»æ': '分析结果',
             'å®æ´æ§ä¸åè§æ§': '完整性与合规性',
             'å¿å¡«å­æ®µå®æ´æ§': '必填字段完整性',
             'æ»å': '总则',
@@ -226,18 +226,19 @@ class AIValidator:
             'å¥æ©èæ ¸æºå¶': '奖惩考核机制',
             'é»è¾å³ç³»åçæ§': '逻辑关系合理性',
             'èè´£ååè¦çå¨é¢': '职责划分覆盖全面',
-            'éæ£åçº§ååºåç': '隐患分级响应合理',
-            'é­ç¯ç®¡çé¾æ¡å®æ´': '闭环管理链条完整',
+            'éæ£åçº§ååºåç': '隐患分级响应合理',
+            'é­ç¯ç®¡çé链接æ¡å®æ´': '闭环管理链条完整',
             'å¤å«ç»è®º': '判别结论',
             'æ¹è¿å»ºè®®': '改进建议',
             'ä¸åè§': '不合规',
             'è¡¥å': '补充',
             'æç¡®': '明确',
-            'å¶å®': '制定',
+            'å®å¥': '制定',
             'è¯¦ç»': '详细',
             'å¢å ': '增加',
             'ææ¡£': '文档',
-            'æªæ¾å°': '未找到',
+            'æª²æ²¡': '检查',
+            'æ²¡æ¾å°': '未找到',
             'ç¸å³': '相关',
             'ä¿¡æ¯': '信息',
             'åè§': '合规'
@@ -293,9 +294,9 @@ class AIValidator:
             f"请严格按照以下JSON格式输出：",
             "[",
             "  {",
-            f'    "字段1": "值1",',
-            f'    "字段2": "值2",',
-            f'    "字段3": "值3",',
+            f'    "字段1": "값1",',
+            f'    "字段2": "값2",',
+            f'    "字段3": "값3",',
             f'    "..."',
             "  }",
             "]",
@@ -343,7 +344,7 @@ class AIValidator:
         # 根据错误信息，接口需要 'inputs' 参数且类型为字符串
         # print("***********输入提示词**********")
         # print(prompt)
-        result = self.deepseek_v3_guangzhou(prompt)
+        result = self.deepseek_chat(prompt)
         # print("***********判别json***********")
         # print(result)
 
@@ -719,11 +720,21 @@ class AIValidator:
         # print(f"验证结果Markdown文件已保存: {md_path}")
         return md_path
 
-    def process_validation_results(self, processed_results, output_dir, rules_description="",result_collection_file_path=""):
+    def process_validation_results(self, processed_results, output_dir, rules_description="", result_collection_file_path=None):
         """处理验证后的结果并生成JSON和Markdown文件"""
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
+        # 添加严格的参数验证
+        if result_collection_file_path is None:
+            raise ValueError("result_collection_file_path parameter is required and cannot be None")
+        
+        # 确保 result_collection_file_path 是 Path 对象
+        if isinstance(result_collection_file_path, str):
+            result_collection_file_path = Path(result_collection_file_path)
+        elif not isinstance(result_collection_file_path, Path):
+            raise ValueError(f"result_collection_file_path must be a string or Path object, got {type(result_collection_file_path)}")
+        
         successful_count = 0
         failed_count = 0
         validation_results = {}
@@ -802,20 +813,42 @@ class AIValidator:
                     judge_result = plot_validation_results[0]
                 else:
                     judge_result = plot_validation_results
+                
+                # 调试日志：打印 result_collection_file_path
+                print(f"🔍 [DEBUG] result_collection_file_path: {result_collection_file_path}")
+                print(f"🔍 [DEBUG] result_collection_file_path exists: {result_collection_file_path.exists()}")
+                print(f"🔍 [DEBUG] folder_name: {folder_name}")
+                
                 result_collection_json_manager = ResultCollectionJsonFileManager()
+                result_collection_file_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # 如果文件不存在，直接创建空数组文件
                 if not result_collection_file_path.exists():
+                    print(f"⚠️ [WARNING] Creating new result_collection file: {result_collection_file_path}")
                     result_collection_file_path.write_text("[]", encoding="utf-8")
+
+                # 更新 result_collection 文件
                 with result_collection_json_manager.file_lock:
                     collections = result_collection_json_manager.load_json_without_lock(result_collection_file_path)
+                    found = False
                     for collection in collections:
-                        if folder_name+".json" == collection['filename']:
+                        if folder_name + ".json" == collection['filename']:
                             collection["judge_results"] = judge_result
                             collection["update_time"] = int(time.time())
                             collection["is_judged"] = True
                             collection["is_valid"] = self.check_violation_status(judge_result)
+                            collection["construction_date"] = self.extract_construction_year(judge_result)
+                            found = True
+                            print(f"✅ [SUCCESS] Updated collection for {folder_name}.json")
+                            break
+                    
+                    if not found:
+                        print(f"❌ [ERROR] Collection not found for {folder_name}.json in {result_collection_file_path}")
+                        print(f"   Available collections: {[c.get('filename') for c in collections]}")
+                    
                     # 保存任务
                     result_collection_json_manager.save_json_without_lock(result_collection_file_path, collections)
-
+                    print(f"💾 [SAVED] Saved result_collection to: {result_collection_file_path}")
             except Exception as e:
                 failed_count += 1
                 print(f"❌ 处理验证结果失败 {folder_name}: {str(e)}")
@@ -990,7 +1023,7 @@ class AIValidator:
         """
         流式调用API
         """
-        api_key = "sk-61c86b0083fe4aa99b216691ac8e8cec"
+        api_key = "sk-ad2be9fb1aa44429b8895806809ab2a5"
         client = OpenAI(
             api_key=api_key,
             base_url="https://api.deepseek.com")
@@ -1051,81 +1084,168 @@ class AIValidator:
         final_text = result["choices"][0]["message"]["content"]
         return final_text
 
-    def check_violation_status(self,data_dict):
+    def extract_construction_year(self, judge_result):
+        """
+        从 judge_results 中提取动工时间判定的年份
+        通常格式为 "正式动工时间为2019年"，只提取年份数字
+        """
+        if not isinstance(judge_result, dict):
+            return 0
+        
+        # 查找动工时间判定字段
+        construction_field = None
+        for key in ["动工时间判定", "【动工时间判定】"]:
+            if key in judge_result:
+                construction_field = judge_result[key]
+                break
+        
+        if not construction_field or not isinstance(construction_field, str):
+            return 0
+        
+        # 使用正则表达式提取年份（4位数字）
+        import re
+        year_match = re.search(r'(\d{4})', construction_field)
+        if year_match:
+            try:
+                year = int(year_match.group(1))
+                # 确保是合理的年份（1900-2100）
+                if 1900 <= year <= 2100:
+                    return year
+            except ValueError:
+                pass
+        
+        return 0
+    def check_violation_status(self, data_dict):
         """
         判断字典中是否存在违规字段
-
-        Args:
-            data_dict: 待检查的字典
-
-        Returns:
-            str: "legal" - 没有违规
-                 "illegal" - 存在违规
-                 "unknown" - 存在error字段
+        
+        新逻辑：
+        - 如果 judge_results 中存在 "评审前违规建设情况：'否'"，则为不违规 (legal)
+        - 如果 judge_results 中存在 "评审前违规建设情况：'是'"，则为违规 (illegal)
+        - 其他情况按原有逻辑处理
         """
         # 首先检查是否存在error字段
         if "error" in data_dict or "Error" in data_dict or "ERROR" in data_dict:
             return "unknown"
 
+        # 将整个 data_dict 转换为字符串进行搜索
+        import json
+        try:
+            blob = json.dumps(data_dict, ensure_ascii=False)
+        except:
+            # 如果转换失败，直接使用 str()
+            blob = str(data_dict)
+
+        # 优先检查 "评审前违规建设情况" 字段
+        # 检查是否包含 "评审前违规建设情况：'否'" 或 "评审前违规建设情况:'否'"
+        if re.search(r"评审前违规建设情况\s*[:：]\s*['\"“”‘’]?\s*否\s*['\"“”‘’]?", blob):
+            return "legal"
+        
+        # 检查是否包含 "评审前违规建设情况：'是'" 或 "评审前违规建设情况:'是'"
+        if re.search(r"评审前违规建设情况\s*[:：]\s*['\"“”‘’]?\s*是\s*['\"“”‘’]?", blob):
+            return "illegal"
+
+        # 如果没有找到评审前违规建设情况，使用原有的违规判断逻辑
         # 需要检查的违规相关字段关键词
-        violation_keywords = ["违规","超标","violation", "是否违规", "违规判定"]
+        # violation_keywords = ["违规", "超标", "violation", "是否违规", "违规判定"]
 
-        # 违规判定值中的违规标识
-        violation_indicators = ["违规", "是", "yes", "true", "存在违规", "违规建设"]
+        # # 违规判定值中的违规标识
+        # violation_indicators = ["违规", "是", "yes", "true", "存在违规", "违规建设"]
 
-        # 遍历字典中的所有字段
-        for key, value in data_dict.items():
-            # 跳过user_rules等规则说明字段
-            if key == "user_rules" or "规则" in key:
-                continue
+        # # 遍历字典中的所有字段
+        # for key, value in data_dict.items():
+        #     # 跳过user_rules等规则说明字段
+        #     if key == "user_rules" or "规则" in key:
+        #         continue
 
-            # 检查字段名是否包含违规相关关键词
-            if any(keyword in key for keyword in violation_keywords):
-                # 如果值是字符串且包含违规标识
-                if isinstance(value, str):
-                    value_lower = value.lower()
-                    # 检查是否包含违规标识
-                    for indicator in violation_indicators:
-                        if indicator in value:
-                            # 排除"不违规"、"未违规"等否定情况
-                            if "不违规" not in value and "未违规" not in value:
-                                return "illegal"
+        #     # 检查字段名是否包含违规相关关键词
+        #     if any(keyword in key for keyword in violation_keywords):
+        #         # 如果值是字符串且包含违规标识
+        #         if isinstance(value, str):
+        #             # 检查是否包含违规标识
+        #             for indicator in violation_indicators:
+        #                 if indicator in value:
+        #                     # 排除"不违规"、"未违规"等否定情况
+        #                     if "不违规" not in value and "未违规" not in value:
+        #                         return "illegal"
 
         # 如果没有找到违规字段
-        return "legal"
+        return "unknown"
+    # def check_violation_status(self,data_dict):
+    #         """
+    #         判断字典中是否存在违规字段
 
-if __name__ == "__main__":
-    validator = AIValidator()
+    #         Args:
+    #             data_dict: 待检查的字典
 
-    # 配置路径
-    json_dir = "data/output/filter_pdf/markdown_extraction"
-    output_dir = "data/output/results"
+    #         Returns:
+    #             str: "legal" - 没有违规
+    #                 "illegal" - 存在违规
+    #                 "unknown" - 存在error字段
+    #         """
+    #         # 首先检查是否存在error字段
+    #         if "error" in data_dict or "Error" in data_dict or "ERROR" in data_dict:
+    #             return "unknown"
 
-    # 加载JSON文件
-    processed_results = validator.load_json_files(json_dir)
+    #         # 需要检查的违规相关字段关键词
+    #         violation_keywords = ["违规","超标","violation", "是否违规", "违规判定"]
 
-    if processed_results:
-        # 示例：使用不同的用户规则进行验证
-        user_rules_options = [
-            "检查文档是否包含完整的安全生产责任制，包括责任分工、考核机制等内容",
-            "验证环境管理体系中污染防治措施是否明确，监测监控要求是否具体",
-            "判别质量管理体系中质量控制流程是否合理，质量检查程序是否完整",
-            "分析项目管理制度中风险管理措施是否到位，应急预案是否完善",
-            "评估文档中是否包含隐患排查制度的所有必要要素：总则、职责分工、排查内容、治理流程等"
-        ]
+    #         # 违规判定值中的违规标识
+    #         violation_indicators = ["违规", "是", "yes", "true", "存在违规", "违规建设"]
 
-        print("示例用户规则选项:")
-        for i, rule in enumerate(user_rules_options, 1):
-            print(f"  {i}. {rule}")
+    #         # 遍历字典中的所有字段
+    #         for key, value in data_dict.items():
+    #             # 跳过user_rules等规则说明字段
+    #             if key == "user_rules" or "规则" in key:
+    #                 continue
 
-        # 默认使用第一个规则
-        selected_rule = user_rules_options[0]
-        print(f"\n使用用户规则: {selected_rule}")
+    #             # 检查字段名是否包含违规相关关键词
+    #             if any(keyword in key for keyword in violation_keywords):
+    #                 # 如果值是字符串且包含违规标识
+    #                 if isinstance(value, str):
+    #                     value_lower = value.lower()
+    #                     # 检查是否包含违规标识
+    #                     for indicator in violation_indicators:
+    #                         if indicator in value:
+    #                             # 排除"不违规"、"未违规"等否定情况
+    #                             if "不违规" not in value and "未违规" not in value:
+    #                                 return "illegal"
 
-        # validator.process_validation_results(
-        #     processed_results,
-        #     output_dir,
-        #     rules_description=selected_rule
-        # )
-    else:
-        print("没有找到可处理的JSON文件")
+    #         # 如果没有找到违规字段
+    #         return "legal"
+
+# if __name__ == "__main__":
+#     validator = AIValidator()
+
+#     # 配置路径
+#     json_dir = "data/output/filter_pdf/markdown_extraction"
+#     output_dir = "data/output/results"
+
+#     # 加载JSON文件
+#     processed_results = validator.load_json_files(json_dir)
+
+#     if processed_results:
+#         # 示例：使用不同的用户规则进行验证
+#         user_rules_options = [
+#             "检查文档是否包含完整的安全生产责任制，包括责任分工、考核机制等内容",
+#             "验证环境管理体系中污染防治措施是否明确，监测监控要求是否具体",
+#             "判别质量管理体系中质量控制流程是否合理，质量检查程序是否完整",
+#             "分析项目管理制度中风险管理措施是否到位，应急预案是否完善",
+#             "评估文档中是否包含隐患排查制度的所有必要要素：总则、职责分工、排查内容、治理流程等"
+#         ]
+
+#         print("示例用户规则选项:")
+#         for i, rule in enumerate(user_rules_options, 1):
+#             print(f"  {i}. {rule}")
+
+#         # 默认使用第一个规则
+#         selected_rule = user_rules_options[0]
+#         print(f"\n使用用户规则: {selected_rule}")
+
+#         # validator.process_validation_results(
+#         #     processed_results,
+#         #     output_dir,
+#         #     rules_description=selected_rule
+#         # )
+#     else:
+#         print("没有找到可处理的JSON文件")

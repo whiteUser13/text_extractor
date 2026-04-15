@@ -550,7 +550,7 @@ def extract_by_custom_rules(pdf_path: str, output_dir: str, extraction_rules: Li
         try:
             original_filename = os.path.splitext(os.path.basename(pdf_path))[0]
             # timestamp = str(int(time.time()))[-6:]
-            output_filename = f"{original_filename}_错误.pdf"
+            output_filename = f"{original_filename}.pdf"
 
             # 删除具有相同原始文件名的旧文件
             delete_existing_files_with_same_base(output_dir, original_filename)
