@@ -18,3 +18,4 @@ PyMySQL
 werkzeug==3.1.3
 bcrypt==5.0.0
 pyjwt==2.10.1
+matplotlib==3.10.8

@@ -7,21 +7,24 @@ import json
 import copy
 import traceback
 import time
-from collections import Counter
-from datetime import datetime
-import hashlib
-import os
-import re  # 0316新增
+from utils.stats2word import export_stats_to_word
 from utils.task_folder_utils import task_folder_utils
 from utils.auth_util import AuthUtils
 from utils.task_verify import task_permission_required
-from utils.json_manager import ResultCollectionJsonFileManager
+from utils.json_manager import ResultCollectionJsonFileManager,TaskJsonFileManager,StatsResultJsonFileManager,SceneStatsJsonFileManager
 from utils.content_extraction import deepseek_generate_stream,deepseek_v3_guangzhou,generate_stream
 
 airesult_bp = Blueprint("airesult", __name__)
 
 result_collection_json_manager = ResultCollectionJsonFileManager()
+task_json_manager = TaskJsonFileManager()
+stats_result_json_manager = StatsResultJsonFileManager()
+scene_stats_json_manager = SceneStatsJsonFileManager()
 
+SCENE_STATS_FILE = Path("data/tasks/scene_stats.json")
+# 初始化任务文件（如果不存在）
+if not SCENE_STATS_FILE.exists():
+    SCENE_STATS_FILE.write_text("{}", encoding="utf-8")
 def api_ok(data=None):
     return {"code": 0, "msg": "ok", "data": data}
 
@@ -258,6 +261,11 @@ def _sanitize_judge_result(judge_result: dict, max_rules_chars: int = 600):
 
     return jr
 
+def _get_task_record_safe(task_json_manger, json_task_path,task_id):
+    with task_json_manager.file_lock:
+        tasks = task_json_manager.load_json_without_lock(json_task_path)
+    task_record = next((t for t in tasks if t["id"] == task_id), None)
+    return task_record
 
 # ==================== 原有接口 ====================
 
@@ -539,7 +547,7 @@ def airesult_review():
 @airesult_bp.post("/ai/statistics")
 @AuthUtils.token_required
 @task_permission_required()
-def ai_statistics():
+def ai_statistics_by_task():
     try:
         data = request.json
         model = data.get("model", "env")
@@ -640,5 +648,275 @@ def ai_statistics():
         return jsonify({
             "data": parsed
         })
+    except Exception:
+        return jsonify(api_fail(traceback.format_exc())), 500
+
+@airesult_bp.post("/ai/stats/byscene")
+@AuthUtils.token_required
+@task_permission_required()
+def ai_statistics_by_scene():
+    try:
+        data = request.json
+        model = data.get("model", "env")
+        stat_type = data.get("statType", "all")
+        user_prompt = data.get("prompt", "")
+        custom_fields = data.get("customFields", [])
+        task_id = data.get("task_id", "")
+        scene_id = data.get("scene_id", "")
+        if not task_id:
+            return jsonify(api_fail("缺少task_id")), 400
+        if not scene_id:
+            return jsonify(api_fail("缺少scene_id")), 400
+
+        task_dirs = task_folder_utils.get_task_dirs(task_id)
+        # file_names = _list_parsed_file_names(task_dirs)
+        # result_collection_file_path = task_dirs['base'] / "result_collection.json"
+        json_task_path = Path(task_folder_utils.get_task_dir()) / "tasks.json"
+        task_record = _get_task_record_safe(task_json_manager,json_task_path,task_id)
+        task_scene_id = str(task_record.get("sceneId") or "default").strip()
+        if(task_scene_id != scene_id):
+            return jsonify(api_fail("scene_id有误")), 400
+        # 获取此场景下的所有任务id
+        with task_json_manager.file_lock:
+            tasks = task_json_manager.load_json_without_lock(json_task_path)
+        # 筛选出 scene_id 匹配的任务id,
+        scene_tasks_id = [t.get("id") for t in tasks if str(t.get("sceneId") or "default").strip() == scene_id]
+        # 循环scene_tasks_id，获取每个任务的result_collection.json，合并到selected_data
+        selected_data = []
+        for tid in scene_tasks_id:
+            td = task_folder_utils.get_task_dirs(tid)
+            result_collection_file_path = td['base'] / f"result_collection_{scene_id}.json"
+            if not result_collection_file_path.exists():
+                result_collection_file_path = task_dirs['base'] / f"result_collection.json"
+            if not result_collection_file_path.exists():
+                continue
+            with result_collection_json_manager.file_lock:
+                collections = result_collection_json_manager.load_json_without_lock(result_collection_file_path)
+            judge_items = []
+            extract_items = []
+            for collection in collections:
+                extract_items.append(collection["extraction_results"][0])
+                collection["judge_results"].pop('user_rules', None)
+                judge_items.append(collection["judge_results"])
+            if stat_type == "judge":
+                selected_data += judge_items
+            elif stat_type == "extract":
+                selected_data += extract_items
+            else:  # all
+                for collection in collections:
+                    collection["judge_results"].pop('user_rules', None)
+                    selected_data.append(collection["extraction_results"][0] | collection["judge_results"])
+
+
+        # =========================
+        # 2️⃣ 拼接自定义字段
+        # =========================
+        custom_field_str = "\n".join(
+            [f"{f}," for f in custom_fields]
+        )
+
+        # =========================
+        # 3️⃣ 构造 Prompt（核心）
+        # =========================
+        final_prompt = f"""
+        你是一个数据分析助手，请根据提供的数据完成统计分析任务。
+
+        【用户统计需求】
+        {user_prompt}
+
+        【数据】
+        {json.dumps(selected_data, ensure_ascii=False)}
+
+        【用户自定义字段】
+        {custom_field_str}
+
+        【任务要求】
+        1. 根据用户的自定义字段对此对象数组进行统计分析，每个对象是一个数据记录，包含提取结果和判别结果等信息。统计分析可以是计数、分类、求和、平均值等，具体取决于用户的需求。
+        2. 只返回统计结果，不要解释
+        3. 如果不包含用户自定义的字段，value为0
+        4. 返回 JSON 数组格式，格式如下：
+
+        [
+          {{"name": "分类1", "value": 数值}},
+          {{"name": "分类2", "value": 数值}}
+        ]
+
+        5. 必须是合法 JSON，不能包含任何多余文字
+        """
+        # =========================
+        # 4️⃣ 调用大模型
+        # =========================
+        if model == "guangzhou":
+            result = deepseek_v3_guangzhou(final_prompt)
+        elif model == "env":
+            result = generate_stream(final_prompt)
+        elif model == "online":
+            result = deepseek_generate_stream(final_prompt)
+        print(result)
+        if result == None:
+            return jsonify(api_fail("模型无法使用，请切换")), 500
+        # =========================
+        # 5️⃣ 解析返回（关键）
+        # =========================
+        try:
+            parsed = json.loads(result)
+        except Exception as e:
+            print("解析失败:", e)
+            parsed = []
+
+        return jsonify({
+            "data": parsed
+        })
+    except Exception:
+        return jsonify(api_fail(traceback.format_exc())), 500
+
+# 保存信息统计结果接口
+@airesult_bp.post("/save/stats/task")
+@AuthUtils.token_required
+@task_permission_required()
+def save_ai_stats():
+    try:
+        data = request.json
+        task_id = data.get("task_id", "")
+        stats_name = data.get("stats_name", "")
+        stats_prompt = data.get("stats_prompt", "")
+        stats_result = data.get("stats_result", {})
+        if not task_id:
+            return jsonify(api_fail("缺少task_id")), 400
+        task_dirs = task_folder_utils.get_task_dirs(task_id)
+        if not task_dirs['base'].exists():
+            return jsonify(api_fail("task_id错误")), 400
+        stats_file_path = task_dirs['base'] / "stats_result.json"
+        # stats_file = stats_dir / f"stats_{scene_id}.json"
+        if not stats_file_path.exists():
+            stats_file_path.write_text("[]", encoding="utf-8")
+        with stats_result_json_manager._get_file_lock(stats_file_path):
+            stats_collections = stats_result_json_manager.load_json_without_lock(stats_file_path)
+            stats_collections.append({
+                "stats_name": stats_name,
+                "stats_prompt": stats_prompt,
+                "stats_result": stats_result,
+            })
+            stats_result_json_manager.save_json_without_lock(stats_file_path, stats_collections)
+        return jsonify(api_ok({"message": "统计结果保存成功"}))
+    except Exception:
+        return jsonify(api_fail(traceback.format_exc())), 500
+
+@airesult_bp.post("/save/stats/scene")
+@AuthUtils.token_required
+def save_ai_stats_in_scene():
+    try:
+        data = request.json
+        scene_id = data.get("scene_id", "")
+        stats_name = data.get("stats_name", "")
+        stats_prompt = data.get("stats_prompt", "")
+        stats_result = data.get("stats_result", {})
+        if not scene_id:
+            return jsonify(api_fail("缺少scene_id")), 400
+        stats_file_path = Path(task_folder_utils.get_task_dir()) / "scene_stats.json"
+        # stats_file = stats_dir / f"stats_{scene_id}.json"
+        if not stats_file_path.exists():
+            stats_file_path.write_text("{}", encoding="utf-8")
+        with scene_stats_json_manager.file_lock:
+            stats_collections = scene_stats_json_manager.load_json_without_lock(stats_file_path)
+            if scene_id not in stats_collections:
+                stats_collections[scene_id] = []
+            stats_collections[scene_id].append({
+                "stats_name": stats_name,
+                "stats_prompt": stats_prompt,
+                "stats_result": stats_result,
+            })
+            scene_stats_json_manager.save_json_without_lock(stats_file_path, stats_collections)
+        return jsonify(api_ok({"message": "统计结果保存成功"}))
+    except Exception:
+        return jsonify(api_fail(traceback.format_exc())), 500
+
+@airesult_bp.get("/get/stats/task")
+@AuthUtils.token_required
+@task_permission_required()
+def get_ai_stats_by_task():
+    try:
+
+        task_id = request.args.get("task_id")
+        if not task_id:
+            return jsonify(api_fail("缺少task_id")), 400
+        task_dirs = task_folder_utils.get_task_dirs(task_id)
+        stats_file_path = task_dirs['base'] / "stats_result.json"
+        # stats_file = stats_dir / f"stats_{scene_id}.json"
+        if not stats_file_path.exists():
+            stats_file_path.write_text("[]", encoding="utf-8")
+        stats_collections = stats_result_json_manager.load_json(stats_file_path)
+        return jsonify(api_ok({"message": "获取成功","data":stats_collections}))
+    except Exception:
+        return jsonify(api_fail(traceback.format_exc())), 500
+@airesult_bp.get("/get/stats/scene")
+@AuthUtils.token_required
+def get_ai_stats_by_scene():
+    try:
+        scene_id = request.args.get("scene_id")
+        if not scene_id:
+            return jsonify(api_fail("缺少scene_id")), 400
+        stats_file_path = Path(task_folder_utils.get_task_dir()) / "scene_stats.json"
+        # stats_file = stats_dir / f"stats_{scene_id}.json"
+        if not stats_file_path.exists():
+            stats_file_path.write_text("{}", encoding="utf-8")
+        stats_collections = scene_stats_json_manager.load_json(stats_file_path)
+        return jsonify(api_ok({"message": "获取成功","data":stats_collections[scene_id] if scene_id in stats_collections else []}))
+    except Exception:
+        return jsonify(api_fail(traceback.format_exc())), 500
+
+
+@airesult_bp.post("/generate/word/task")
+@AuthUtils.token_required
+@task_permission_required()
+def generate_word_by_stats():
+    try:
+        data = request.json
+        task_id = data.get("task_id", "")
+        if not task_id:
+            return jsonify(api_fail("缺少task_id")), 400
+        task_dirs = task_folder_utils.get_task_dirs(task_id)  # 验证 task_id 是否有效
+        if not task_dirs["base"].exists():
+            return jsonify(api_fail("task_id错误")), 400
+        stats_file_path = task_dirs['base'] / "stats_result.json"
+        # stats_file = stats_dir / f"stats_{scene_id}.json"
+        if not stats_file_path.exists():
+            return jsonify(api_fail("暂无统计信息")), 400
+        filename = f"任务{task_id}统计结果.docx"
+        stats_collections = stats_result_json_manager.load_json(stats_file_path)
+        output_file_name = task_dirs["results"] / filename
+        export_stats_to_word(stats_collections, output_file_name)
+        return jsonify(api_ok({"message": "生成成功","filename":filename}))
+    except Exception:
+        return jsonify(api_fail(traceback.format_exc())), 500
+
+@airesult_bp.post("/generate/word/scene")
+@AuthUtils.token_required
+@task_permission_required()
+def generate_word_by_scene_stats():
+    try:
+        data = request.json
+        task_id = data.get("task_id", "")
+        scene_id = data.get("scene_id", "")
+        if not task_id:
+            return jsonify(api_fail("缺少task_id")), 400
+        if not scene_id:
+            return jsonify(api_fail("缺少scene_id")), 400
+        task_dirs = task_folder_utils.get_task_dirs(task_id)  # 验证 task_id 是否有效
+        if not task_dirs["base"].exists():
+            return jsonify(api_fail("task_id错误")), 400
+        task_dir = task_folder_utils.get_task_dir()
+        stats_file_path =  Path(task_dir) / "scene_stats.json"
+        # stats_file = stats_dir / f"stats_{scene_id}.json"
+        if not stats_file_path.exists():
+            return jsonify(api_fail("暂无统计信息")), 400
+        filename = f"场景{scene_id}统计结果.docx"
+        stats_collections = scene_stats_json_manager.load_json(stats_file_path)
+        if scene_id not in stats_collections:
+            return jsonify(api_fail("scene_id有误或该场景暂无统计信息")), 400
+
+        output_file_name = task_dirs["results"] / filename
+        export_stats_to_word(stats_collections[scene_id], output_file_name)
+        return jsonify(api_ok({"message": "生成成功","filename":filename}))
     except Exception:
         return jsonify(api_fail(traceback.format_exc())), 500
