@@ -7,16 +7,29 @@ import json
 import copy
 import traceback
 import time
+
 from utils.stats2word import export_stats_to_word
 from utils.task_folder_utils import task_folder_utils
 from utils.auth_util import AuthUtils
 from utils.task_verify import task_permission_required
 from utils.json_manager import ResultCollectionJsonFileManager,TaskJsonFileManager,StatsResultJsonFileManager,SceneStatsJsonFileManager
+=======
+from collections import Counter
+from datetime import datetime
+import hashlib
+import os
+import re  # 0316新增
+from utils.task_folder_utils import task_folder_utils
+from utils.auth_util import AuthUtils
+from utils.task_verify import task_permission_required
+from utils.json_manager import ResultCollectionJsonFileManager
+>>>>>>> dev
 from utils.content_extraction import deepseek_generate_stream,deepseek_v3_guangzhou,generate_stream
 
 airesult_bp = Blueprint("airesult", __name__)
 
 result_collection_json_manager = ResultCollectionJsonFileManager()
+
 task_json_manager = TaskJsonFileManager()
 stats_result_json_manager = StatsResultJsonFileManager()
 scene_stats_json_manager = SceneStatsJsonFileManager()
@@ -25,6 +38,7 @@ SCENE_STATS_FILE = Path("data/tasks/scene_stats.json")
 # 初始化任务文件（如果不存在）
 if not SCENE_STATS_FILE.exists():
     SCENE_STATS_FILE.write_text("{}", encoding="utf-8")
+
 def api_ok(data=None):
     return {"code": 0, "msg": "ok", "data": data}
 
@@ -261,11 +275,13 @@ def _sanitize_judge_result(judge_result: dict, max_rules_chars: int = 600):
 
     return jr
 
+
 def _get_task_record_safe(task_json_manger, json_task_path,task_id):
     with task_json_manager.file_lock:
         tasks = task_json_manager.load_json_without_lock(json_task_path)
     task_record = next((t for t in tasks if t["id"] == task_id), None)
     return task_record
+
 
 # ==================== 原有接口 ====================
 
@@ -547,7 +563,11 @@ def airesult_review():
 @airesult_bp.post("/ai/statistics")
 @AuthUtils.token_required
 @task_permission_required()
+
 def ai_statistics_by_task():
+
+def ai_statistics():
+
     try:
         data = request.json
         model = data.get("model", "env")
@@ -649,6 +669,7 @@ def ai_statistics_by_task():
             "data": parsed
         })
     except Exception:
+
         return jsonify(api_fail(traceback.format_exc())), 500
 
 @airesult_bp.post("/ai/stats/byscene")
@@ -919,4 +940,5 @@ def generate_word_by_scene_stats():
         export_stats_to_word(stats_collections[scene_id], output_file_name)
         return jsonify(api_ok({"message": "生成成功","filename":filename}))
     except Exception:
+
         return jsonify(api_fail(traceback.format_exc())), 500

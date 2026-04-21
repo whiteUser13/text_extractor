@@ -205,6 +205,7 @@ class UploadJsonFileManager:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
+
 class SceneStatsJsonFileManager(object):
     _instance = None
     _lock = threading.Lock()  # 用于单例创建时加锁
@@ -241,6 +242,7 @@ class SceneStatsJsonFileManager(object):
 
 
 
+
 class ResultCollectionJsonFileManager(object):
     _instance = None
     _lock = threading.Lock()  # 用于单例创建时加锁
@@ -272,6 +274,7 @@ class ResultCollectionJsonFileManager(object):
 
     def save_json_without_lock(self,path, data):
         with open(path, "w", encoding="utf-8") as f:
+
             json.dump(data, f, ensure_ascii=False, indent=2)
 
 
@@ -329,3 +332,6 @@ class StatsResultJsonFileManager(object):
         """清理所有锁（可选方法）"""
         with self._file_locks_lock:
             self._file_locks.clear()
+
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
