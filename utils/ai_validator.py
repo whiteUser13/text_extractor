@@ -1119,133 +1119,68 @@ class AIValidator:
         """
         判断字典中是否存在违规字段
         
-        新逻辑：
-        - 如果 judge_results 中存在 "评审前违规建设情况：'否'"，则为不违规 (legal)
-        - 如果 judge_results 中存在 "评审前违规建设情况：'是'"，则为违规 (illegal)
-        - 其他情况按原有逻辑处理
+        【终极修复方案】：
+        不再将整个字典转为字符串搜索，而是直接提取核心判别字段进行匹配。
+        这能 100% 避免 user_rules 或其他无关字段的干扰。
         """
-        # 首先检查是否存在error字段
+        # 1. 基础错误检查
+        if not isinstance(data_dict, dict):
+            return "unknown"
+            
         if "error" in data_dict or "Error" in data_dict or "ERROR" in data_dict:
             return "unknown"
 
-        # 将整个 data_dict 转换为字符串进行搜索
-        import json
-        try:
-            blob = json.dumps(data_dict, ensure_ascii=False)
-        except:
-            # 如果转换失败，直接使用 str()
-            blob = str(data_dict)
+        import re
 
-        # 优先检查 "评审前违规建设情况" 字段
-        # 检查是否包含 "评审前违规建设情况：'否'" 或 "评审前违规建设情况:'否'"
-        if re.search(r"评审前违规建设情况\s*[:：]\s*['\"“”‘’]?\s*否\s*['\"“”‘’]?", blob):
-            return "legal"
+        # 2. 优先尝试从最权威的核心字段直接获取结果
+        # 字段名："最终违规判定（AI判断过程+结果）"
+        core_field_name = "最终违规判定（AI判断过程+结果）"
         
-        # 检查是否包含 "评审前违规建设情况：'是'" 或 "评审前违规建设情况:'是'"
-        if re.search(r"评审前违规建设情况\s*[:：]\s*['\"“”‘’]?\s*是\s*['\"“”‘’]?", blob):
-            return "illegal"
+        target_text = None
+        if core_field_name in data_dict:
+            target_text = data_dict[core_field_name]
+            print(f"[DEBUG] Found core field '{core_field_name}'. Content preview: {str(target_text)[:100]}...")
+        else:
+            # 如果核心字段不存在，尝试备选字段
+            alt_fields = ["开发活动性质是否违规判定", "历史建成情况判定"]
+            for field in alt_fields:
+                if field in data_dict:
+                    target_text = data_dict[field]
+                    print(f"[DEBUG] Core field missing. Using alternative field '{field}'. Content preview: {str(target_text)[:100]}...")
+                    break
+        
+        # 3. 如果找到了目标文本，直接在目标文本中搜索，彻底隔绝 user_rules
+        if target_text and isinstance(target_text, str):
+            # 检查是否包含 "评审前违规建设情况：'是'"
+            if re.search(r"评审前违规建设情况\s*[:：]\s*['\"“”‘’]?\s*是\s*['\"“”‘’]?", target_text):
+                print(f"[DEBUG] Matched '是' in core/alt field. Result: illegal")
+                return "illegal"
+            
+            # 检查是否包含 "评审前违规建设情况：'否'"
+            if re.search(r"评审前违规建设情况\s*[:：]\s*['\"“”‘’]?\s*否\s*['\"“”‘’]?", target_text):
+                print(f"[DEBUG] Matched '否' in core/alt field. Result: legal")
+                return "legal"
+                
+            print(f"[DEBUG] Target text found but no specific '是/否' pattern matched.")
+        else:
+            print(f"[DEBUG] Core field '{core_field_name}' not found in data_dict keys: {list(data_dict.keys())}")
+            # 4. 兜底方案：如果核心字段缺失，才退回到全字典搜索（但必须排除 user_rules）
+            # 创建纯净副本
+            clean_dict = {k: v for k, v in data_dict.items() if k != "user_rules"}
+            try:
+                import json
+                blob = json.dumps(clean_dict, ensure_ascii=False)
+                # 再次确认 blob 中不包含 user_rules 的内容长度特征（可选）
+                
+                if re.search(r"评审前违规建设情况\s*[:：]\s*['\"“”‘’]?\s*是\s*['\"“”‘’]?", blob):
+                    print(f"[DEBUG] Fallback search matched '是'. Result: illegal")
+                    return "illegal"
+                if re.search(r"评审前违规建设情况\s*[:：]\s*['\"“”‘’]?\s*否\s*['\"“”‘’]?", blob):
+                    print(f"[DEBUG] Fallback search matched '否'. Result: legal")
+                    return "legal"
+            except Exception as e:
+                print(f"[DEBUG] Fallback search failed: {e}")
 
-        # 如果没有找到评审前违规建设情况，使用原有的违规判断逻辑
-        # 需要检查的违规相关字段关键词
-        # violation_keywords = ["违规", "超标", "violation", "是否违规", "违规判定"]
-
-        # # 违规判定值中的违规标识
-        # violation_indicators = ["违规", "是", "yes", "true", "存在违规", "违规建设"]
-
-        # # 遍历字典中的所有字段
-        # for key, value in data_dict.items():
-        #     # 跳过user_rules等规则说明字段
-        #     if key == "user_rules" or "规则" in key:
-        #         continue
-
-        #     # 检查字段名是否包含违规相关关键词
-        #     if any(keyword in key for keyword in violation_keywords):
-        #         # 如果值是字符串且包含违规标识
-        #         if isinstance(value, str):
-        #             # 检查是否包含违规标识
-        #             for indicator in violation_indicators:
-        #                 if indicator in value:
-        #                     # 排除"不违规"、"未违规"等否定情况
-        #                     if "不违规" not in value and "未违规" not in value:
-        #                         return "illegal"
-
-        # 如果没有找到违规字段
+        # 5. 默认返回 unknown
+        print(f"[DEBUG] No violation status determined. Returning unknown.")
         return "unknown"
-    # def check_violation_status(self,data_dict):
-    #         """
-    #         判断字典中是否存在违规字段
-
-    #         Args:
-    #             data_dict: 待检查的字典
-
-    #         Returns:
-    #             str: "legal" - 没有违规
-    #                 "illegal" - 存在违规
-    #                 "unknown" - 存在error字段
-    #         """
-    #         # 首先检查是否存在error字段
-    #         if "error" in data_dict or "Error" in data_dict or "ERROR" in data_dict:
-    #             return "unknown"
-
-    #         # 需要检查的违规相关字段关键词
-    #         violation_keywords = ["违规","超标","violation", "是否违规", "违规判定"]
-
-    #         # 违规判定值中的违规标识
-    #         violation_indicators = ["违规", "是", "yes", "true", "存在违规", "违规建设"]
-
-    #         # 遍历字典中的所有字段
-    #         for key, value in data_dict.items():
-    #             # 跳过user_rules等规则说明字段
-    #             if key == "user_rules" or "规则" in key:
-    #                 continue
-
-    #             # 检查字段名是否包含违规相关关键词
-    #             if any(keyword in key for keyword in violation_keywords):
-    #                 # 如果值是字符串且包含违规标识
-    #                 if isinstance(value, str):
-    #                     value_lower = value.lower()
-    #                     # 检查是否包含违规标识
-    #                     for indicator in violation_indicators:
-    #                         if indicator in value:
-    #                             # 排除"不违规"、"未违规"等否定情况
-    #                             if "不违规" not in value and "未违规" not in value:
-    #                                 return "illegal"
-
-    #         # 如果没有找到违规字段
-    #         return "legal"
-
-# if __name__ == "__main__":
-#     validator = AIValidator()
-
-#     # 配置路径
-#     json_dir = "data/output/filter_pdf/markdown_extraction"
-#     output_dir = "data/output/results"
-
-#     # 加载JSON文件
-#     processed_results = validator.load_json_files(json_dir)
-
-#     if processed_results:
-#         # 示例：使用不同的用户规则进行验证
-#         user_rules_options = [
-#             "检查文档是否包含完整的安全生产责任制，包括责任分工、考核机制等内容",
-#             "验证环境管理体系中污染防治措施是否明确，监测监控要求是否具体",
-#             "判别质量管理体系中质量控制流程是否合理，质量检查程序是否完整",
-#             "分析项目管理制度中风险管理措施是否到位，应急预案是否完善",
-#             "评估文档中是否包含隐患排查制度的所有必要要素：总则、职责分工、排查内容、治理流程等"
-#         ]
-
-#         print("示例用户规则选项:")
-#         for i, rule in enumerate(user_rules_options, 1):
-#             print(f"  {i}. {rule}")
-
-#         # 默认使用第一个规则
-#         selected_rule = user_rules_options[0]
-#         print(f"\n使用用户规则: {selected_rule}")
-
-#         # validator.process_validation_results(
-#         #     processed_results,
-#         #     output_dir,
-#         #     rules_description=selected_rule
-#         # )
-#     else:
-#         print("没有找到可处理的JSON文件")

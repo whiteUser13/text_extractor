@@ -17,6 +17,7 @@
 - ✅ 兜底：凡"3 层及以上的纯数字编号标题"（如 2.2.2.2 标题）一律强制当标题；
 - ✅ 兄弟编号优先：当前在 2.2.2.1 时，遇到 2.2.2.x 也当标题。
 - ✅ **跨页拆分**：同一 section 内容跨越不同页面时，自动拆分为多个子块，每个子块有独立的 page_idx
+- ✅ **跨页拆分**：同一 section 内容跨越不同页面时，自动拆分为多个子块，每个子块有独立的 page_idx
 
 依赖：
     pip install openpyxl pillow   # pillow 可选但推荐
@@ -836,7 +837,15 @@ def is_enumeration(text: str) -> bool:
 
 # =============== 标准化分块 JSON 生成（支持跨页拆分）===============
 
+# =============== 标准化分块 JSON 生成（支持跨页拆分）===============
+
 def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, base_dir: str) -> List[Dict[str, Any]]:
+    """
+    构建标准化分块，支持跨页拆分：
+    - 同一 section 的内容如果跨越多个页面，会拆分成多个子块
+    - 每个子块有独立的 page_idx
+    - 表格和图片会归属到对应页面的子块中
+    """
     """
     构建标准化分块，支持跨页拆分：
     - 同一 section 的内容如果跨越多个页面，会拆分成多个子块
@@ -847,6 +856,7 @@ def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, bas
     current_section: Optional[Dict[str, Any]] = None
     in_toc = False  # 标记是否在目录部分
 
+    # === 按页记录：最近一次出现"图/表编号引用"的 section，用于图片归属纠偏 ===
     # === 按页记录：最近一次出现"图/表编号引用"的 section，用于图片归属纠偏 ===
     last_figure_section_for_page: Dict[int, Dict[str, Any]] = {}
     last_text_section_for_page: Dict[int, Dict[str, Any]] = {}
@@ -907,11 +917,11 @@ def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, bas
         "images": []
     }
     page_groups = {}
+    page_groups = {}
 
     for it in items:
         typ = it.get("type")
         page = it.get("page_idx")
-
         # 确保 page 是有效整数
         if page is None or not isinstance(page, int):
             page = 0
@@ -935,6 +945,8 @@ def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, bas
                 if is_directory_title(line):
                     # 先 flush 当前 section
                     flush_current_section()
+                    # 先 flush 当前 section
+                    flush_current_section()
                     in_toc = True
                     # 创建目录节
                     current_section = {
@@ -943,9 +955,15 @@ def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, bas
                         "title": "目录",
                         "content": "",
                         "page_idx": page,
+                        "content": "",
+                        "page_idx": page,
                         "tables": [],
                         "images": []
                     }
+                    page_groups = {}
+                    if page not in page_groups:
+                        page_groups[page] = {"content": "", "tables": [], "images": []}
+                    page_groups[page]["content"] += line + "\n"
                     page_groups = {}
                     if page not in page_groups:
                         page_groups[page] = {"content": "", "tables": [], "images": []}
@@ -958,11 +976,19 @@ def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, bas
                         if page not in page_groups:
                             page_groups[page] = {"content": "", "tables": [], "images": []}
                         page_groups[page]["content"] += line + "\n"
+                    if in_toc and current_section:
+                        if page not in page_groups:
+                            page_groups[page] = {"content": "", "tables": [], "images": []}
+                        page_groups[page]["content"] += line + "\n"
                     continue
 
                 line_norm = normalize_heading_text(line)
 
                 # 严格的标题识别
+                code, title, is_heading = parse_heading_strict(
+                    line_norm, text_level=text_level, in_toc=in_toc,
+                    heading_mode=heading_mode, cjk_state=cjk_state
+                )
                 code, title, is_heading = parse_heading_strict(
                     line_norm, text_level=text_level, in_toc=in_toc,
                     heading_mode=heading_mode, cjk_state=cjk_state
@@ -980,6 +1006,8 @@ def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, bas
                         "title": title,
                         "content": "",
                         "page_idx": page,
+                        "content": "",
+                        "page_idx": page,
                         "tables": [],
                         "images": []
                     }
@@ -995,12 +1023,19 @@ def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, bas
                     page_groups[page]["content"] += line + "\n"
                 else:
                     # 正文内容，按页面分组存储
+                    # 正文内容，按页面分组存储
                     if current_section:
+                        if page not in page_groups:
+                            page_groups[page] = {"content": "", "tables": [], "images": []}
+                        page_groups[page]["content"] += line + "\n"
                         if page not in page_groups:
                             page_groups[page] = {"content": "", "tables": [], "images": []}
                         page_groups[page]["content"] += line + "\n"
                     else:
                         # 如果没有当前节，使用概述节
+                        if page not in page_groups:
+                            page_groups[page] = {"content": "", "tables": [], "images": []}
+                        page_groups[page]["content"] += line + "\n"
                         if page not in page_groups:
                             page_groups[page] = {"content": "", "tables": [], "images": []}
                         page_groups[page]["content"] += line + "\n"
@@ -1011,7 +1046,11 @@ def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, bas
 
         elif typ == "table":
             # 处理表格：归属到当前页码的 group
+            # 处理表格：归属到当前页码的 group
             if current_section:
+                if page not in page_groups:
+                    page_groups[page] = {"content": "", "tables": [], "images": []}
+                page_groups[page]["tables"].append(it)
                 if page not in page_groups:
                     page_groups[page] = {"content": "", "tables": [], "images": []}
                 page_groups[page]["tables"].append(it)
@@ -1019,8 +1058,12 @@ def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, bas
                 if page not in page_groups:
                     page_groups[page] = {"content": "", "tables": [], "images": []}
                 page_groups[page]["tables"].append(it)
+                if page not in page_groups:
+                    page_groups[page] = {"content": "", "tables": [], "images": []}
+                page_groups[page]["tables"].append(it)
 
         elif typ == "image":
+            # 处理图片：优先挂到"同页最近出现图/表编号引用"的节，避免跨小节误挂
             # 处理图片：优先挂到"同页最近出现图/表编号引用"的节，避免跨小节误挂
             page_idx = it.get("page_idx")
             target_section = None
@@ -1028,6 +1071,7 @@ def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, bas
                 target_section = last_figure_section_for_page.get(page_idx) or last_text_section_for_page.get(page_idx)
 
             if target_section is None:
+                target_section = current_section or sections[0] if sections else None
                 target_section = current_section or sections[0] if sections else None
 
             if target_section:
