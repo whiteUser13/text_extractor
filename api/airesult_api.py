@@ -7,13 +7,11 @@ import json
 import copy
 import traceback
 import time
-
 from utils.stats2word import export_stats_to_word
 from utils.task_folder_utils import task_folder_utils
 from utils.auth_util import AuthUtils
 from utils.task_verify import task_permission_required
 from utils.json_manager import ResultCollectionJsonFileManager,TaskJsonFileManager,StatsResultJsonFileManager,SceneStatsJsonFileManager
-=======
 from collections import Counter
 from datetime import datetime
 import hashlib
@@ -23,7 +21,6 @@ from utils.task_folder_utils import task_folder_utils
 from utils.auth_util import AuthUtils
 from utils.task_verify import task_permission_required
 from utils.json_manager import ResultCollectionJsonFileManager
->>>>>>> dev
 from utils.content_extraction import deepseek_generate_stream,deepseek_v3_guangzhou,generate_stream
 
 airesult_bp = Blueprint("airesult", __name__)
@@ -563,11 +560,7 @@ def airesult_review():
 @airesult_bp.post("/ai/statistics")
 @AuthUtils.token_required
 @task_permission_required()
-
 def ai_statistics_by_task():
-
-def ai_statistics():
-
     try:
         data = request.json
         model = data.get("model", "env")

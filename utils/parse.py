@@ -16,6 +16,7 @@
 - ✅ Excel/JSON 同步：与上一版一致；图片保留原名与相对路径；表格以 Markdown 嵌入。
 - ✅ 兜底：凡"3 层及以上的纯数字编号标题"（如 2.2.2.2 标题）一律强制当标题；
 - ✅ 兄弟编号优先：当前在 2.2.2.1 时，遇到 2.2.2.x 也当标题。
+- ✅ **跨页拆分**：同一 section 内容跨越不同页面时，自动拆分为多个子块，每个子块有独立的 page_idx
 
 依赖：
     pip install openpyxl pillow   # pillow 可选但推荐
@@ -827,33 +828,87 @@ def is_enumeration(text: str) -> bool:
     return False
 
 
+# =============== 标准化分块 JSON 生成（支持跨页拆分）===============
+
 def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, base_dir: str) -> List[Dict[str, Any]]:
+    """
+    构建标准化分块，支持跨页拆分：
+    - 同一 section 的内容如果跨越多个页面，会拆分成多个子块
+    - 每个子块有独立的 page_idx
+    - 表格和图片会归属到对应页面的子块中
+    """
     sections: List[Dict[str, Any]] = []
     current_section: Optional[Dict[str, Any]] = None
     in_toc = False  # 标记是否在目录部分
 
-    # === 按页记录：最近一次出现“图/表编号引用”的 section，用于图片归属纠偏 ===
+    # === 按页记录：最近一次出现"图/表编号引用"的 section，用于图片归属纠偏 ===
     last_figure_section_for_page: Dict[int, Dict[str, Any]] = {}
     last_text_section_for_page: Dict[int, Dict[str, Any]] = {}
     FIG_REF_RE = re.compile(r"(图|表)\s*\d+(?:\.\d+)*\s*[-－—]\s*\d+", re.UNICODE)
+    
+    # 0122修改: 自动判定标题体系，避免中文枚举标题识别干扰纯数字编号文档
+    heading_mode = detect_heading_mode(items)
+    cjk_state: Dict[str, Optional[int]] = {"lv1": None, "lv2": None}
+    
+    # 用于暂存当前 section 按页面分组的内容
+    # 格式: {page_idx: {"content": str, "tables": list, "images": list}}
+    page_groups: Dict[int, Dict[str, Any]] = {}
+
+    def flush_current_section():
+        """将当前 section 的 page_groups 转换为多个子块并添加到 sections"""
+        nonlocal page_groups, current_section
+        
+        if not current_section or not page_groups:
+            return
+        
+        base_code = current_section.get("section_code", "0")
+        base_title = current_section.get("title", "概述")
+        
+        # 按页码排序
+        for page in sorted(page_groups.keys()):
+            group = page_groups[page]
+            content = group.get("content", "").strip()
+            tables = group.get("tables", [])
+            images = group.get("images", [])
+            
+            # 跳过空块（但如果有表格或图片则保留）
+            if not content and not tables and not images:
+                continue
+            
+            # 创建子块
+            sub_section = {
+                "report_id": report_id,
+                "section_code": base_code,
+                "title": base_title,
+                "content": content,
+                "page_idx": page,
+                "tables": tables,
+                "images": images
+            }
+            sections.append(sub_section)
+        
+        # 清空 page_groups
+        page_groups = {}
+
     # 创建默认的概述节
     current_section = {
         "report_id": report_id,
         "section_code": "0",
         "title": "概述",
         "content": "",
+        "page_idx": None,
         "tables": [],
         "images": []
     }
-    sections.append(current_section)
-
-    # 0122修改: 自动判定标题体系，避免中文枚举标题识别干扰纯数字编号文档
-    heading_mode = detect_heading_mode(items)
-    cjk_state: Dict[str, Optional[int]] = {"lv1": None, "lv2": None}
+    page_groups = {}
 
     for it in items:
         typ = it.get("type")
         page = it.get("page_idx")
+        
+        # 确保 page 是有效整数
+        if page is None or not isinstance(page, int):
+            page = 0
 
         if typ == "text":
             txt = it.get("text", "")
@@ -872,79 +927,119 @@ def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, bas
 
                 # 检查是否是目录标题
                 if is_directory_title(line):
+                    # 先 flush 当前 section
+                    flush_current_section()
                     in_toc = True
                     # 创建目录节
                     current_section = {
                         "report_id": report_id,
                         "section_code": "TOC",
                         "title": "目录",
-                        "content": line + "\n",
+                        "content": "",
+                        "page_idx": page,
                         "tables": [],
                         "images": []
                     }
-                    sections.append(current_section)
+                    page_groups = {}
+                    if page not in page_groups:
+                        page_groups[page] = {"content": "", "tables": [], "images": []}
+                    page_groups[page]["content"] += line + "\n"
                     continue
 
                 # 跳过目录和点线引导行
                 if is_toc_leader_line(line):
-                    if in_toc:
-                        current_section["content"] += (line + "\n")
+                    if in_toc and current_section:
+                        if page not in page_groups:
+                            page_groups[page] = {"content": "", "tables": [], "images": []}
+                        page_groups[page]["content"] += line + "\n"
                     continue
 
                 line_norm = normalize_heading_text(line)
 
                 # 严格的标题识别
-                code, title, is_heading = parse_heading_strict(line_norm, text_level=text_level, in_toc=in_toc)
+                code, title, is_heading = parse_heading_strict(
+                    line_norm, text_level=text_level, in_toc=in_toc,
+                    heading_mode=heading_mode, cjk_state=cjk_state
+                )
 
                 # 如果是有效的标题，创建新节
                 if is_heading and code and title:
+                    # 先 flush 当前 section
+                    flush_current_section()
+                    
                     # 创建新节
                     current_section = {
                         "report_id": report_id,
                         "section_code": code,
                         "title": title,
-                        "content": "",  # 不包含标题行本身
+                        "content": "",
+                        "page_idx": page,
                         "tables": [],
                         "images": []
                     }
-                    sections.append(current_section)
+                    page_groups = {}
+                    
                     # 如果创建了新节，说明已经离开目录部分
                     if in_toc and code != "TOC":
                         in_toc = False
+                    
+                    # 标题行本身也作为内容的一部分
+                    if page not in page_groups:
+                        page_groups[page] = {"content": "", "tables": [], "images": []}
+                    page_groups[page]["content"] += line + "\n"
                 else:
-                    # 正文内容，添加到当前节
+                    # 正文内容，按页面分组存储
                     if current_section:
-                        current_section["content"] += (line + "\n")
+                        if page not in page_groups:
+                            page_groups[page] = {"content": "", "tables": [], "images": []}
+                        page_groups[page]["content"] += line + "\n"
                     else:
                         # 如果没有当前节，使用概述节
-                        sections[0]["content"] += (line + "\n")
+                        if page not in page_groups:
+                            page_groups[page] = {"content": "", "tables": [], "images": []}
+                        page_groups[page]["content"] += line + "\n"
 
             # 记录该页最后一次出现文本时所在的节（作为 image 归属的次级兜底）
             if page_idx is not None and isinstance(page_idx, int) and current_section is not None:
                 last_text_section_for_page[page_idx] = current_section
 
         elif typ == "table":
-            # 处理表格
+            # 处理表格：归属到当前页码的 group
             if current_section:
-                current_section["tables"].append(it)
+                if page not in page_groups:
+                    page_groups[page] = {"content": "", "tables": [], "images": []}
+                page_groups[page]["tables"].append(it)
             else:
-                sections[0]["tables"].append(it)
+                if page not in page_groups:
+                    page_groups[page] = {"content": "", "tables": [], "images": []}
+                page_groups[page]["tables"].append(it)
 
         elif typ == "image":
-            # 处理图片：优先挂到“同页最近出现图/表编号引用”的节，避免跨小节误挂
+            # 处理图片：优先挂到"同页最近出现图/表编号引用"的节，避免跨小节误挂
             page_idx = it.get("page_idx")
             target_section = None
             if page_idx is not None and isinstance(page_idx, int):
                 target_section = last_figure_section_for_page.get(page_idx) or last_text_section_for_page.get(page_idx)
 
             if target_section is None:
-                target_section = current_section or sections[0]
+                target_section = current_section or sections[0] if sections else None
 
-            # 写入锚点元数据，便于后续 Excel 精准定位/调试
-            it["anchor_section_code"] = target_section.get("section_code", "")
-            it["anchor_title"] = target_section.get("title", "")
+            if target_section:
+                # 写入锚点元数据，便于后续 Excel 精准定位/调试
+                it["anchor_section_code"] = target_section.get("section_code", "")
+                it["anchor_title"] = target_section.get("title", "")
+                
+                if page not in page_groups:
+                    page_groups[page] = {"content": "", "tables": [], "images": []}
+                page_groups[page]["images"].append(it)
+            else:
+                # 兜底：放到概述节
+                if 0 not in page_groups:
+                    page_groups[0] = {"content": "", "tables": [], "images": []}
+                page_groups[0]["images"].append(it)
 
-            target_section["images"].append(it)
+    # 处理最后一个 section
+    flush_current_section()
 
     # 清理空内容的节（除了概述节和目录节）
     filtered_sections = []
@@ -955,286 +1050,6 @@ def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, bas
 
         # 保留有内容、表格或图片的节，或者概述节、目录节
         if content or tables or images or section.get("title") in ["概述", "目录"]:
-            # 清理内容中的多余空行
-            if section.get("content"):
-                section["content"] = re.sub(r'\n{3,}', '\n\n', section["content"].strip())
-            filtered_sections.append(section)
-
-    return filtered_sections
-
-
-def is_enumeration(text: str) -> bool:
-    """检查是否为枚举格式，认为是正文"""
-    t = text.strip()
-
-    # 带括号的数字或中文枚举：（1）、（一）、（5）等
-    if re.match(r"^\s*[（(][一二三四五六七八九十\d]+[）)]\s*.*$", t):
-        return True
-
-    # 中文枚举：一、, 二、等
-    cjk_nums = "一二三四五六七八九十"
-    if re.match(rf"^\s*[{cjk_nums}]+[、．\.]\s*.*$", t):
-        return True
-
-    # 数字顿号枚举：1、, 2、等
-    if re.match(r"^\s*\d+[、．\.]\s*.*$", t):
-        return True
-
-    # 圆圈数字：①, ②等
-    if re.match(r"^[①②③④⑤⑥⑦⑧⑨⑩].*$", t):
-        return True
-
-    # 数字加右括号：1), 2) 等
-    if re.match(r"^\s*\d+\)\s*.*$", t):
-        return True
-
-    # LaTeX 枚举：$\textcircled{1}$ 等
-    if re.match(r'^\s*(?:\$\s*\\textcircled\{\d+\}\s*\$|\\textcircled\{\d+\})', t):
-        return True
-
-    return False
-
-
-def is_pseudo_heading(text: str) -> bool:
-    """像 '表2-7……' / '图1-1……' / '综上所述……' / '……报告》'(无配对《) 等不应当作标题"""
-    if not text:
-        return False
-    u = (text or "").strip()
-    if not u:
-        return False
-    lu = u.lstrip()
-
-    # 排除带括号的枚举项
-    if re.match(r"^\s*[（(][一二三四五六七八九十\d]+[）)]\s*.*$", lu):
-        return True
-
-    if lu.startswith(("表", "图")):
-        for ch in lu[1:6]:
-            if ch.isdigit():
-                return True
-    if lu.startswith("综上所述"):
-        return True
-    if lu.endswith("》") and ("《" not in lu):
-        return True
-    # 排除以右括号开头的文本
-    if lu.startswith("）"):
-        return True
-    # 排除书名号内容
-    if "《" in lu and "》" in lu:
-        return True
-    return False
-
-
-def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, base_dir: str) -> List[Dict[str, Any]]:
-    sections: List[Dict[str, Any]] = []
-    current_section: Optional[Dict[str, Any]] = None
-
-    # 创建默认的概述节
-    current_section = {
-        "report_id": report_id,
-        "section_code": "0",
-        "title": "概述",
-        "content": "",
-        "tables": [],
-        "images": []
-    }
-    sections.append(current_section)
-
-    for it in items:
-        typ = it.get("type")
-        page = it.get("page_idx")
-
-        if typ == "text":
-            txt = it.get("text", "")
-            if not txt or not txt.strip():
-                continue
-
-            text_level = it.get("text_level")
-
-            # 按行处理文本
-            lines = [l.strip() for l in txt.splitlines() if l.strip()]
-
-            for line in lines:
-                if not line:
-                    continue
-
-                # 跳过目录和点线引导行
-                if is_toc_leader_line(line):
-                    continue
-
-                line_norm = normalize_heading_text(line)
-
-                # 严格的标题识别
-                code, title, is_heading = parse_heading_strict(line_norm, text_level=text_level, heading_mode=heading_mode, cjk_state=cjk_state)
-
-                # 如果是有效的标题，创建新节
-                if is_heading and code and title:
-                    # 创建新节
-                    current_section = {
-                        "report_id": report_id,
-                        "section_code": code,
-                        "title": title,
-                        "content": "",  # 不包含标题行本身
-                        "tables": [],
-                        "images": []
-                    }
-                    sections.append(current_section)
-                else:
-                    # 正文内容，添加到当前节
-                    if current_section:
-                        current_section["content"] += (line + "\n")
-                    else:
-                        # 如果没有当前节，使用概述节
-                        sections[0]["content"] += (line + "\n")
-
-        elif typ == "table":
-            # 处理表格
-            if current_section:
-                current_section["tables"].append(it)
-            else:
-                sections[0]["tables"].append(it)
-
-        elif typ == "image":
-            # 处理图片
-            if current_section:
-                current_section["images"].append(it)
-            else:
-                sections[0]["images"].append(it)
-
-    # 清理空内容的节（除了概述节）
-    filtered_sections = []
-    for section in sections:
-        content = section.get("content", "").strip()
-        tables = section.get("tables", [])
-        images = section.get("images", [])
-
-        # 保留有内容、表格或图片的节，或者概述节
-        if content or tables or images or section.get("title") == "概述":
-            # 清理内容中的多余空行
-            if section.get("content"):
-                section["content"] = re.sub(r'\n{3,}', '\n\n', section["content"].strip())
-            filtered_sections.append(section)
-
-    return filtered_sections
-
-
-def is_enumeration(text: str) -> bool:
-    """检查是否为枚举格式，认为是正文"""
-    t = text.strip()
-
-    # 中文枚举：一、, （一）等
-    cjk_nums = "一二三四五六七八九十"
-    if re.match(rf"^[{cjk_nums}]+[、．\.].*$", t):
-        return True
-
-    # 带括号的枚举：（1）, （一）等
-    if re.match(r"^[（(][一二三四五六七八九十\d]+[）)].*$", t):
-        return True
-
-    # 数字顿号枚举：1、, 2、等
-    if re.match(r"^\d+[、．\.].*$", t):
-        return True
-
-    # 圆圈数字：①, ②等
-    if re.match(r"^[①②③④⑤⑥⑦⑧⑨⑩].*$", t):
-        return True
-
-    # 数字加右括号：1), 2) 等
-    if re.match(r"^\d+\)\s*.*$", t):
-        return True
-
-    # LaTeX 枚举：$\textcircled{1}$ 等
-    if re.match(r'^\s*(?:\$\s*\\textcircled\{\d+\}\s*\$|\\textcircled\{\d+\})', t):
-        return True
-
-    return False
-
-
-def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, base_dir: str) -> List[Dict[str, Any]]:
-    sections: List[Dict[str, Any]] = []
-    current_section: Optional[Dict[str, Any]] = None
-
-    # 创建默认的概述节
-    current_section = {
-        "report_id": report_id,
-        "section_code": "0",
-        "title": "概述",
-        "content": "",
-        "tables": [],
-        "images": []
-    }
-    sections.append(current_section)
-
-    for it in items:
-        typ = it.get("type")
-        page = it.get("page_idx")
-
-        if typ == "text":
-            txt = it.get("text", "")
-            if not txt or not txt.strip():
-                continue
-
-            text_level = it.get("text_level")
-
-            # 按行处理文本
-            lines = [l.strip() for l in txt.splitlines() if l.strip()]
-
-            for line in lines:
-                if not line:
-                    continue
-
-                # 跳过目录和点线引导行
-                if is_toc_leader_line(line):
-                    continue
-
-                line_norm = normalize_heading_text(line)
-
-                # 严格的标题识别
-                code, title, is_heading = parse_heading_strict(line_norm, text_level=text_level)
-
-                # 如果是有效的标题，创建新节
-                if is_heading and code and title:
-                    # 创建新节
-                    current_section = {
-                        "report_id": report_id,
-                        "section_code": code,
-                        "title": title,
-                        "content": line + "\n",  # 标题行本身也作为内容
-                        "tables": [],
-                        "images": []
-                    }
-                    sections.append(current_section)
-                else:
-                    # 正文内容，添加到当前节
-                    if current_section:
-                        current_section["content"] += (line + "\n")
-                    else:
-                        # 如果没有当前节，使用概述节
-                        sections[0]["content"] += (line + "\n")
-
-        elif typ == "table":
-            # 处理表格
-            if current_section:
-                current_section["tables"].append(it)
-            else:
-                sections[0]["tables"].append(it)
-
-        elif typ == "image":
-            # 处理图片
-            if current_section:
-                current_section["images"].append(it)
-            else:
-                sections[0]["images"].append(it)
-
-    # 清理空内容的节（除了概述节）
-    filtered_sections = []
-    for section in sections:
-        content = section.get("content", "").strip()
-        tables = section.get("tables", [])
-        images = section.get("images", [])
-
-        # 保留有内容、表格或图片的节，或者概述节
-        if content or tables or images or section.get("title") == "概述":
             # 清理内容中的多余空行
             if section.get("content"):
                 section["content"] = re.sub(r'\n{3,}', '\n\n', section["content"].strip())
@@ -1277,123 +1092,6 @@ def merge_false_headings(sections: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return merged
 
 
-# =============== 标准化分块 JSON 生成 ==============
-# =============== 标准化分块 JSON 生成 ===============
-def build_standardized_sections(items: List[Dict[str, Any]], report_id: str, base_dir: str) -> List[Dict[str, Any]]:
-    sections: List[Dict[str, Any]] = []
-    current_section: Optional[Dict[str, Any]] = None
-
-    def _update_section_page_idx(section: Optional[Dict[str, Any]], page_idx: Any) -> None:
-        """0324修改：将文本/表格/图片块的 page_idx 回填到 section 顶层，保留最早页。"""
-        if not section:
-            return
-        if page_idx is None or not isinstance(page_idx, int) or page_idx < 0:
-            return
-
-        current_page_idx = section.get("page_idx")
-        if current_page_idx is None or not isinstance(current_page_idx, int) or current_page_idx < 0:
-            section["page_idx"] = page_idx
-        else:
-            section["page_idx"] = min(current_page_idx, page_idx)
-
-    # 创建默认的概述节，用于存放所有没有明确标题的内容
-    current_section = {
-        "report_id": report_id,
-        "section_code": "0",
-        "title": "概述",
-        "content": "",
-        "page_idx": None,  # 0324修改：为文本 section 保留顶层页码
-        "tables": [],
-        "images": []
-    }
-    sections.append(current_section)
-
-    for it in items:
-        typ = it.get("type")
-        page = it.get("page_idx")
-
-        if typ == "text":
-            txt = it.get("text", "")
-            if not txt or not txt.strip():
-                continue
-
-            text_level = it.get("text_level")
-
-            # 按行处理文本
-            lines = [l for l in txt.splitlines() if l.strip() != ""]
-
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-
-                # 跳过目录和点线引导行
-                if is_toc_leader_line(line):
-                    continue
-
-                line_norm = normalize_heading_text(line)
-
-                # 严格的标题识别条件
-                code, title, is_heading = parse_heading_strict(line_norm, text_level=text_level)
-
-                # 如果是有效的标题，创建新节
-                if is_heading and code and title:
-                    current_section = {
-                        "report_id": report_id,
-                        "section_code": code,
-                        "title": title,
-                        "content": "",
-                        "page_idx": page if isinstance(page, int) and page >= 0 else None,  # 0324修改
-                        "tables": [],
-                        "images": []
-                    }
-                    sections.append(current_section)
-
-                    # 标题行本身也作为内容的一部分
-                    current_section["content"] += (line + "\n")
-                    _update_section_page_idx(current_section, page)  # 0324修改：标题所在页作为 section 起始页
-                else:
-                    # 正文内容，添加到当前节
-                    if current_section:
-                        current_section["content"] += (line + "\n")
-                        _update_section_page_idx(current_section, page)  # 0324修改：正文文本也可回填 section 页码
-                    else:
-                        # 如果没有当前节，使用概述节
-                        sections[0]["content"] += (line + "\n")
-                        _update_section_page_idx(sections[0], page)  # 0324修改
-
-        elif typ == "table":
-            # 处理表格
-            if current_section:
-                current_section["tables"].append(it)
-                _update_section_page_idx(current_section, page)  # 0324修改：表格页码也可回填 section
-            else:
-                sections[0]["tables"].append(it)
-                _update_section_page_idx(sections[0], page)  # 0324修改
-
-        elif typ == "image":
-            # 处理图片
-            if current_section:
-                current_section["images"].append(it)
-                _update_section_page_idx(current_section, page)  # 0324修改：图片页码也可回填 section
-            else:
-                sections[0]["images"].append(it)
-                _update_section_page_idx(sections[0], page)  # 0324修改
-
-    # 清理空内容的节（除了概述节）
-    filtered_sections = []
-    for section in sections:
-        content = section.get("content", "").strip()
-        tables = section.get("tables", [])
-        images = section.get("images", [])
-
-        # 保留有内容、表格或图片的节，或者概述节
-        if content or tables or images or section.get("title") == "概述":
-            filtered_sections.append(section)
-
-    return filtered_sections
-
-
 # =============== 解析与导出核心 ===============
 
 def parse_content_list(json_path: str) -> Dict[str, Any]:
@@ -1405,6 +1103,9 @@ def parse_content_list(json_path: str) -> Dict[str, Any]:
     # MinerU content_list 风格：列表里的每个元素为 {type, text/img/table..., page_idx, ...}
     source_items = data if isinstance(data, list) else []
     std_sections = build_standardized_sections(source_items, report_id, folder_path)
+    
+    # 二次清洗：合并误判的小节
+    std_sections = merge_false_headings(std_sections)
 
     images_all = collect_images_recursive(folder_path)
 
@@ -1449,8 +1150,7 @@ def export_report_files(parsed: Dict[str, Any], output_root: str,
     except Exception as e:
         raise RuntimeError(f"parsed_json_write_error: {e}")
 
-    # ---- B) 为每个原始图片路径挑一个“最佳标题”（用来改文件名 + Excel 图名）----
-    # ---- B) 为每个原始图片路径挑一个“最佳标题”（用来改文件名 + Excel 图名）----
+    # ---- B) 为每个原始图片路径挑一个"最佳标题"（用来改文件名 + Excel 图名）----
     img_best_caption: Dict[str, str] = {}
     for sec in sections:
         for idx, img in enumerate(sec.get("images") or [], start=1):
@@ -1488,7 +1188,7 @@ def export_report_files(parsed: Dict[str, Any], output_root: str,
             # 只记录第一次出现的标题，避免后面覆盖
             img_best_caption.setdefault(src_abs, caption)
 
-    # ---- C) 拷贝图片到 images/，并用“图1-1 XXX”重命名 ----
+    # ---- C) 拷贝图片到 images/，并用"图1-1 XXX"重命名 ----
     src_to_rel: Dict[str, str] = {}
 
     def _safe_filename_from_caption(cap: str, src_abs: str) -> str:
@@ -1539,13 +1239,13 @@ def export_report_files(parsed: Dict[str, Any], output_root: str,
     main_ws = wb.create_sheet(title=safe_sheet_title("Report Content", taken))
     taken.add(main_ws.title)
 
-    headers = ["section_code", "title", "content", "images (with captions)", "tables (Markdown)"]
+    headers = ["section_code", "title", "page_idx", "content", "images (with captions)", "tables (Markdown)"]
     main_ws.append(headers)
 
     wrap_center = Alignment(wrap_text=True, vertical="center", horizontal="center")
     wrap_left = Alignment(wrap_text=True, vertical="top", horizontal="left")
 
-    widths = [15, 40, 80, 70, 120]
+    widths = [15, 40, 10, 80, 70, 120]
     for idx, w in enumerate(widths, start=1):
         main_ws.column_dimensions[get_column_letter(idx)].width = w
 
@@ -1553,6 +1253,7 @@ def export_report_files(parsed: Dict[str, Any], output_root: str,
     for sec in sections:
         code = str(sec.get("section_code") or "")
         title = (sec.get("title") or "").strip()
+        page_idx = sec.get("page_idx") or ""
         content = (sec.get("content") or "").strip()
 
         # ==== 先准备好当前小节的所有表格（仍然合在一个单元格里） ====
@@ -1630,13 +1331,14 @@ def export_report_files(parsed: Dict[str, Any], output_root: str,
             # 没有图片的情况：只占一行
             main_ws.cell(row=row_idx, column=1, value=code)
             main_ws.cell(row=row_idx, column=2, value=title)
-            c_cell = main_ws.cell(row=row_idx, column=3, value=content)
+            main_ws.cell(row=row_idx, column=3, value=page_idx)
+            c_cell = main_ws.cell(row=row_idx, column=4, value=content)
             c_cell.alignment = wrap_left
 
-            img_cell = main_ws.cell(row=row_idx, column=4, value="[无图片]")
+            img_cell = main_ws.cell(row=row_idx, column=5, value="[无图片]")
             img_cell.alignment = wrap_center
 
-            t_cell = main_ws.cell(row=row_idx, column=5, value=table_text)
+            t_cell = main_ws.cell(row=row_idx, column=6, value=table_text)
             t_cell.alignment = wrap_left
 
             main_ws.row_dimensions[row_idx].height = 100
@@ -1651,21 +1353,22 @@ def export_report_files(parsed: Dict[str, Any], output_root: str,
                     # 第 1 行写本节的基础信息 + 表格
                     main_ws.cell(row=r, column=1, value=code)
                     main_ws.cell(row=r, column=2, value=title)
-                    c_cell = main_ws.cell(row=r, column=3, value=content)
+                    main_ws.cell(row=r, column=3, value=page_idx)
+                    c_cell = main_ws.cell(row=r, column=4, value=content)
                     c_cell.alignment = wrap_left
 
-                    t_cell = main_ws.cell(row=r, column=5, value=table_text)
+                    t_cell = main_ws.cell(row=r, column=6, value=table_text)
                     t_cell.alignment = wrap_left
                 else:
-                    # 之后的行，只写图片，其他列留空（也可以按需写“同上”）
+                    # 之后的行，只写图片，其他列留空（也可以按需写"同上"）
                     pass
 
-                # 第 4 列：当前这一张图片的图名 + 缩略图
-                img_cell = main_ws.cell(row=r, column=4, value=caption)
+                # 第 5 列：当前这一张图片的图名 + 缩略图
+                img_cell = main_ws.cell(row=r, column=5, value=caption)
                 img_cell.alignment = wrap_center
 
                 if candidate:
-                    anchor_cell = f"{get_column_letter(4)}{r}"
+                    anchor_cell = f"{get_column_letter(5)}{r}"
                     safe_add_image(
                         main_ws,
                         candidate,
@@ -1682,12 +1385,13 @@ def export_report_files(parsed: Dict[str, Any], output_root: str,
     # ---- E) INDEX & INFO 页，保持原有结构 ----
     idx_ws = wb.create_sheet(title=safe_sheet_title("INDEX", taken))
     taken.add(idx_ws.title)
-    idx_ws.append(["#", "section_code", "title", "images", "tables"])
+    idx_ws.append(["#", "section_code", "title", "page_idx", "images", "tables"])
     for i, s in enumerate(sections, start=1):
         idx_ws.append([
             i,
             s.get("section_code"),
             s.get("title"),
+            s.get("page_idx"),
             len(s.get("images") or []),
             len(s.get("tables") or []),
         ])
@@ -1752,20 +1456,6 @@ def main() -> None:
             xlsx_path = os.path.join(out_dir, f"{rid}.xlsx")
             json_parsed = os.path.join(out_dir, f"{rid}_parsed.json")
             images_dir = os.path.join(out_dir, "images")
-            # 12.27改：以下为原判定逻辑（要求分块xlsx存在）已停用，保留作注释
-            # x_ok = os.path.exists(xlsx_path)
-            # jp_ok = os.path.exists(json_parsed)
-            # i_ok = os.path.isdir(images_dir)
-            #
-            # if x_ok and jp_ok and i_ok:
-            #     summary.append((rid, "SUCCESS", ""))
-            #     success += 1
-            # else:
-            #     reasons = []
-            #     if not x_ok: reasons.append("xlsx_missing")
-            #     if not jp_ok: reasons.append("parsed_json_missing")
-            #     if not i_ok: reasons.append("images_dir_missing")
-            #     summary.append((rid, "FAIL", ",".join(reasons)))
 
             x_ok = os.path.exists(xlsx_path)  # 12.27改：分块xlsx不再生成
             jp_ok = os.path.exists(json_parsed)

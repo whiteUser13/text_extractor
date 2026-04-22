@@ -313,7 +313,58 @@ def _normalize_collection_is_valid(item: dict) -> str:
         return "unknown"
 
     return "unknown"
-
+def _deduplicate_collections_by_filename(collections: list) -> list:
+    """
+    对结果集合进行去重：
+    1. 以 filename (优先) 或 foldername 为唯一键。
+    2. 如果存在多个同名文件，保留 update_time 最新的那一条。
+    3. 如果 update_time 相同，保留列表中出现较后的那一条（通常也是较新的）。
+    """
+    if not collections:
+        return []
+    
+    # 用于存储每个文件名对应的最新记录 { filename: item }
+    latest_items = {}
+    
+    for item in collections:
+        if not isinstance(item, dict):
+            continue
+            
+        # 获取文件名标识，优先使用 filename，其次 foldername
+        file_key = str(item.get("filename") or item.get("foldername") or "").strip()
+        if not file_key:
+            # 如果没有文件名，暂时跳过或视为独立项（视业务需求而定，这里暂跳过以免污染统计）
+            continue
+            
+        # 获取更新时间，默认为 0
+        update_time = item.get("update_time", 0)
+        if isinstance(update_time, str):
+            try:
+                # 尝试将字符串时间转为时间戳比较，或者直接比较字符串（如果格式统一）
+                # 这里简化处理，假设 update_time 主要是数字时间戳
+                update_time = float(update_time)
+            except:
+                update_time = 0
+                
+        # 判断是否替换
+        if file_key not in latest_items:
+            latest_items[file_key] = item
+        else:
+            existing_time = latest_items[file_key].get("update_time", 0)
+            if isinstance(existing_time, str):
+                try:
+                    existing_time = float(existing_time)
+                except:
+                    existing_time = 0
+            
+            # 如果当前项更新，则替换
+            if update_time > existing_time:
+                latest_items[file_key] = item
+    final_filenames = list(latest_items.keys())
+    print(f"[DEBUG] Identified {len(final_filenames)} unique files after deduplication:")
+    for fname in final_filenames:
+        print(f"  - {fname}")
+    return list(latest_items.values())
 
 def _normalize_collection_update_time(item: dict):
     if not isinstance(item, dict):
@@ -888,22 +939,28 @@ def _compute_task_region_stat(task_id: str, task_name: str = "", scene_id: str =
     """
     task_dirs = task_folder_utils.get_task_dirs(task_id)
     collection = _load_result_collection(task_id, task_dirs, scene_id)
+    
+    # 【核心修改】对当前任务的 collection 进行去重
+    unique_collection = _deduplicate_collections_by_filename(collection)
+    
     province = _get_task_province_from_tasks_json(task_id) or _extract_province_from_string(task_name or "") or "其他地区"
-    industry_violation_count = _get_industry_violation_count_from_collection(collection, task_dirs)
+    industry_violation_count = _get_industry_violation_count_from_collection(unique_collection, task_dirs)
+    
     stat = {
         "province": province, 
-        "count": len(collection), 
+        "count": len(unique_collection), # 使用去重后的数量
         "illegal_count": 0, 
         "legal_count": 0,
         "industry_violation_count": industry_violation_count,
-        # "construction_date":construction_year
     }
-    for item in collection:
+    
+    for item in unique_collection:
         valid = _normalize_collection_is_valid(item)
         if valid == "illegal":
             stat["illegal_count"] += 1
         elif valid == "legal":
             stat["legal_count"] += 1
+            
     return stat
 
     task_dirs = task_folder_utils.get_task_dirs(task_id)
@@ -1349,13 +1406,13 @@ def airesult_statistics_overview():
             }))
         
         # 聚合所有任务的统计数据
-        total_files = 0
-        extracted_files = 0
-        judged_files = 0
-        reviewed_files = 0
-        violation_counter = Counter()
-        all_collections = []
-        
+        # total_files = 0
+        # extracted_files = 0
+        # judged_files = 0
+        # reviewed_files = 0
+        # violation_counter = Counter()
+        # all_collections = []
+        all_raw_collections = []
         for tid in task_ids:
             task_dirs = task_folder_utils.get_task_dirs(tid)
             # 修复：只有 scene_id 存在时才传递，否则不传，避免空字符串过滤数据
@@ -1363,14 +1420,17 @@ def airesult_statistics_overview():
                 collection = _load_result_collection(tid, task_dirs, scene_id)
             else:
                 collection = _load_result_collection(tid, task_dirs)
-            all_collections.extend(collection)
-            
-            total_files += len(collection)
-            extracted_files += sum(1 for item in collection if bool(item.get("is_extracted")))
-            judged_files += sum(1 for item in collection if bool(item.get("is_judged")))
-            reviewed_files += sum(1 for item in collection if bool(item.get("is_reviewed")))
-            
-            for item in collection:
+            all_raw_collections.extend(collection)
+
+            unique_collections = _deduplicate_collections_by_filename(all_raw_collections)
+
+            total_files = len(unique_collections)
+            extracted_files = sum(1 for item in unique_collections if bool(item.get("is_extracted")))
+            judged_files = sum(1 for item in unique_collections if bool(item.get("is_judged")))
+            reviewed_files = sum(1 for item in unique_collections if bool(item.get("is_reviewed")))
+
+            violation_counter = Counter()
+            for item in unique_collections:
                 judge_result = _normalize_collection_judge_result(item)
                 if not judge_result:
                     continue
@@ -1378,7 +1438,7 @@ def airesult_statistics_overview():
                     violation_counter[f] += 1
 
         violation_types = [{"type": k, "count": v} for k, v in violation_counter.most_common()]
-        field_extraction_rate = _get_field_extraction_rate_from_collection(all_collections, None)
+        field_extraction_rate = _get_field_extraction_rate_from_collection(unique_collections, None)
 
         result = {
             "total_files": total_files,
@@ -1398,11 +1458,12 @@ def airesult_statistics_overview():
 @AuthUtils.token_required
 @scene_or_task_permission_required()
 def airesult_statistics_violation_types():
-    """0328修改：支持按 task_id 或 sceneId 的违规类型统计。"""
+    """0328修改：支持按 task_id 或 sceneId 的违规类型统计，并去重。"""
     try:
         task_id = (request.args.get("task_id") or "").strip()
         scene_id = (request.args.get("scene_id") or "").strip()
         
+        # ... (获取 task_ids 逻辑不变) ...
         task_ids = []
         if task_id:
             task_ids = [task_id]
@@ -1414,17 +1475,22 @@ def airesult_statistics_violation_types():
         if not task_ids:
             return jsonify(api_ok([]))
         
-        violation_counter = Counter()
+        all_raw_collections = []
         for tid in task_ids:
             task_dirs = task_folder_utils.get_task_dirs(tid)
             collection = _load_result_collection(tid, task_dirs, scene_id)
+            all_raw_collections.extend(collection)
             
-            for item in collection:
-                judge_result = _normalize_collection_judge_result(item)
-                if not judge_result:
-                    continue
-                for f in _get_triggered_violation_fields(judge_result, task_dirs):
-                    violation_counter[f] += 1
+        # 【核心修改】执行去重
+        unique_collections = _deduplicate_collections_by_filename(all_raw_collections)
+        
+        violation_counter = Counter()
+        for item in unique_collections:
+            judge_result = _normalize_collection_judge_result(item)
+            if not judge_result:
+                continue
+            for f in _get_triggered_violation_fields(judge_result, None):
+                violation_counter[f] += 1
 
         result = [{"type": k, "count": v} for k, v in violation_counter.most_common()]
         return jsonify(api_ok(result))
@@ -1436,11 +1502,12 @@ def airesult_statistics_violation_types():
 @AuthUtils.token_required
 @scene_or_task_permission_required()
 def airesult_statistics_field_rate():
-    """0328修改：支持按 task_id 或 sceneId 的字段提取率统计。"""
+    """0328修改：支持按 task_id 或 sceneId 的字段提取率统计，并去重。"""
     try:
         task_id = (request.args.get("task_id") or "").strip()
         scene_id = (request.args.get("scene_id") or "").strip()
         
+        # ... (获取 task_ids 逻辑不变) ...
         task_ids = []
         if task_id:
             task_ids = [task_id]
@@ -1452,13 +1519,16 @@ def airesult_statistics_field_rate():
         if not task_ids:
             return jsonify(api_ok([]))
         
-        all_collections = []
+        all_raw_collections = []
         for tid in task_ids:
             task_dirs = task_folder_utils.get_task_dirs(tid)
             collection = _load_result_collection(tid, task_dirs, scene_id)
-            all_collections.extend(collection)
+            all_raw_collections.extend(collection)
+            
+        # 【核心修改】执行去重
+        unique_collections = _deduplicate_collections_by_filename(all_raw_collections)
         
-        result = _get_field_extraction_rate_from_collection(all_collections, None)
+        result = _get_field_extraction_rate_from_collection(unique_collections, None)
         return jsonify(api_ok(result))
     except Exception:
         return jsonify(api_fail(traceback.format_exc())), 500
@@ -1487,42 +1557,61 @@ def airesult_statistics_clues():
             if not task_ids:
                 return jsonify(api_fail("场景中没有找到任务")), 400
         
-        # 合并所有任务的线索数据
-        all_clues = []
+        # 合并所有任务的原始线索数据前，先合并原始 collection 并去重
+        all_raw_collections = []
+        # 为了后续获取 task_dirs 映射，我们需要记录每个 collection 来自哪个 task
+        # 但 _load_result_collection 返回的是纯数据列表。
+        # 简单做法：先加载所有 collection，去重，然后再遍历生成线索。
+        
+        temp_collections_with_tid = []
         for tid in task_ids:
             task_dirs = task_folder_utils.get_task_dirs(tid)
             if scene_id:
                 collection = _load_result_collection(tid, task_dirs, scene_id)
             else:
                 collection = _load_result_collection(tid, task_dirs)
-            if collection:
-                for item in collection:
-                    judge_result = _normalize_collection_judge_result(item)
-                    if not judge_result:
-                        continue
-                    file_name = _resolve_preview_file_name(task_dirs, item)  # 0327修改：返回结果预览链路可识别的文件名
-                    final_valid = _normalize_collection_is_valid(item)
-                    final_confidence = _get_confidence_from_judge(judge_result)
-                    confidence_source = "explicit" if _extract_explicit_confidence(
-                        judge_result) is not None else "rule_based"
-                    created_at = _normalize_collection_update_time(item)
-                    for field_name in _get_triggered_violation_fields(judge_result):
-                        clue_confidence = _get_clue_confidence(judge_result, field_name)  # 0327修改：线索级置信度按字段单独计算
-                        id_str = f"{tid}_{file_name}_{field_name}"
-                        clue_id = hashlib.md5(id_str.encode()).hexdigest()[:8]
-                        all_clues.append({
-                            "id": clue_id,
-                            "task_id": tid,
-                            "task_name": _get_task_name_from_tasks_json(tid),
-                            "file_name": file_name,
-                            "violation_type": field_name,
-                            "field_name": field_name,
-                            "confidence": clue_confidence,
-                            "final_confidence": final_confidence,
-                            "confidence_source": confidence_source,
-                            "created_at": created_at,
-                            "final_valid": final_valid,
-                        })
+            for item in collection:
+                # 附加 task_id 信息以便后续处理
+                item['_source_task_id'] = tid
+                temp_collections_with_tid.append(item)
+                
+        # 【核心修改】执行去重
+        unique_collections = _deduplicate_collections_by_filename(temp_collections_with_tid)
+        
+        all_clues = []
+        for item in unique_collections:
+            tid = item.pop('_source_task_id', None) # 取出并移除临时字段
+            if not tid: continue
+            
+            task_dirs = task_folder_utils.get_task_dirs(tid)
+            judge_result = _normalize_collection_judge_result(item)
+            if not judge_result:
+                continue
+                
+            file_name = _resolve_preview_file_name(task_dirs, item)
+            final_valid = _normalize_collection_is_valid(item)
+            final_confidence = _get_confidence_from_judge(judge_result)
+            confidence_source = "explicit" if _extract_explicit_confidence(judge_result) is not None else "rule_based"
+            created_at = _normalize_collection_update_time(item)
+            
+            triggered_fields = _get_triggered_violation_fields(judge_result, task_dirs)
+            for field_name in triggered_fields:
+                clue_confidence = _get_clue_confidence(judge_result, field_name)
+                id_str = f"{tid}_{file_name}_{field_name}"
+                clue_id = hashlib.md5(id_str.encode()).hexdigest()[:8]
+                all_clues.append({
+                    "id": clue_id,
+                    "task_id": tid,
+                    "task_name": _get_task_name_from_tasks_json(tid),
+                    "file_name": file_name,
+                    "violation_type": field_name,
+                    "field_name": field_name,
+                    "confidence": clue_confidence,
+                    "final_confidence": final_confidence,
+                    "confidence_source": confidence_source,
+                    "created_at": created_at,
+                    "final_valid": final_valid,
+                })
         
         # 如果没有从result_collection获取到数据，回退到旧逻辑
         if not all_clues:
@@ -1584,7 +1673,7 @@ def airesult_statistics_clues():
 def airesult_statistics_region_distribution():
     """
     0328修改：支持按 task_id（单任务统计）或 sceneId（场景聚合统计）。
-    province 暂时从 tasks.json 读取，这只会读取一个很小的配置文件，不会造成性能瓶颈。
+    新增：实现跨任务的全局文件名去重，确保“全部任务”视图下同名文件只统计最新的一次。
     """
     try:
         task_id = (request.args.get("task_id") or "").strip()
@@ -1595,52 +1684,84 @@ def airesult_statistics_region_distribution():
 
         tasks = _load_all_tasks()
         
-        # 如果提供了 scene_id，使用场景聚合逻辑
+        # 确定当前场景和当前任务
+        current_scene_id = None
+        current_task_id_for_highlight = task_id
+        current_task_name_for_highlight = ""
+        
         if scene_id:
             current_scene_id = scene_id
-            # 找到场景中的第一个任务作为"当前任务"
+            # 找到场景中的第一个任务作为"当前任务"用于高亮
             scene_tasks = [t for t in tasks if str(t.get("sceneId") or "").strip() == scene_id]
             if not scene_tasks:
                 return jsonify(api_fail("场景中没有找到任务")), 400
             
             current_task = scene_tasks[0]
-            task_id = str(current_task.get("id")).strip()
-            current_task_name = str(current_task.get("name") or task_id).strip()
+            current_task_id_for_highlight = str(current_task.get("id")).strip()
+            current_task_name_for_highlight = str(current_task.get("name") or current_task_id_for_highlight).strip()
         else:
             # 单任务模式
-            current_task_name = _get_task_name_from_tasks_json(task_id)
+            current_task_name_for_highlight = _get_task_name_from_tasks_json(task_id)
             # 获取当前任务的 sceneId
-            current_scene_id = None
             for t in tasks:
                 if str(t.get("id") or "").strip() == task_id:
                     current_scene_id = str(t.get("sceneId") or "default").strip()
                     break
         
-        current_province = _get_task_province_from_tasks_json(task_id) or _extract_province_from_string(
-            current_task_name) or "其他地区"
-        
-        current_task_stat = _compute_task_region_stat(task_id, current_task_name, current_scene_id)
-        current_task_stat.update({
-            "is_current_task": True,
-            "current_task_id": task_id,
-            "current_task_name": current_task_name,
-        })
+        # 如果没有找到 scene_id，无法进行场景聚合，返回错误
+        if not current_scene_id:
+             return jsonify(api_fail("无法确定场景ID")), 400
 
-        agg = {}
+        # 1. 收集该场景下所有任务的所有原始 collection 数据
+        all_raw_collections_with_tid = []
+        target_task_ids = []
+        
+        # 找出该场景下的所有任务ID
         for t in tasks:
-            tid = t.get("id")
-            tname = t.get("name") or tid
-            if not tid:
-                continue
-            # 只统计相同场景的任务
-            task_scene_id = str(t.get("sceneId") or "default").strip()
-            if task_scene_id != current_scene_id:
-                continue
-            one = _compute_task_region_stat(tid, tname, current_scene_id)
-            prov = one.get("province") or "其他地区"
-            if prov not in agg:
-                agg[prov] = {
-                    "province": prov,
+            if str(t.get("sceneId") or "").strip() == current_scene_id:
+                target_task_ids.append(str(t.get("id")).strip())
+        
+        for tid in target_task_ids:
+            task_dirs = task_folder_utils.get_task_dirs(tid)
+            collection = _load_result_collection(tid, task_dirs, current_scene_id)
+            for item in collection:
+                # 标记数据来源任务，以便去重后还能知道它属于哪个任务（用于省份统计等）
+                # 注意：这里我们主要关心文件名去重，省份信息可以从文件名或任务配置中获取
+                # 为了简化，我们先去重，然后再确定每个文件的归属任务（取最新的那个任务）
+                item['_source_task_id'] = tid
+                all_raw_collections_with_tid.append(item)
+                
+        # 2. 全局去重
+        unique_collections = _deduplicate_collections_by_filename(all_raw_collections_with_tid)
+        
+        # 3. 基于去重后的数据，重新计算每个省份的统计
+        # 我们需要知道每个去重后的文件属于哪个省份。
+        # 策略：从文件所属的任务中获取省份。
+        
+        province_stats = {} # { province: { count, illegal, legal, industry_violation } }
+        
+        # 缓存任务省份信息，避免重复读取
+        task_province_cache = {}
+        
+        for item in unique_collections:
+            source_tid = item.get('_source_task_id', '')
+            
+            # 获取该任务对应的省份
+            if source_tid not in task_province_cache:
+                task_province_cache[source_tid] = _get_task_province_from_tasks_json(source_tid)
+            
+            province = task_province_cache[source_tid]
+            if not province:
+                # 如果任务没配省份，尝试从文件名提取
+                fname = str(item.get("filename") or item.get("foldername") or "")
+                province = _extract_province_from_string(fname)
+            
+            if not province:
+                province = "其他地区"
+                
+            if province not in province_stats:
+                province_stats[province] = {
+                    "province": province,
                     "count": 0,
                     "illegal_count": 0,
                     "legal_count": 0,
@@ -1649,38 +1770,66 @@ def airesult_statistics_region_distribution():
                     "current_task_id": "",
                     "current_task_name": "",
                 }
-            agg[prov]["count"] += int(one.get("count", 0) or 0)
-            agg[prov]["illegal_count"] += int(one.get("illegal_count", 0) or 0)
-            agg[prov]["legal_count"] += int(one.get("legal_count", 0) or 0)
-            agg[prov]["industry_violation_count"] += int(one.get("industry_violation_count", 0) or 0)
-
-        if current_province not in agg:
-            agg[current_province] = {
-                "province": current_province,
-                "count": int(current_task_stat.get("count", 0) or 0),
-                "illegal_count": int(current_task_stat.get("illegal_count", 0) or 0),
-                "legal_count": int(current_task_stat.get("legal_count", 0) or 0),
-                "industry_violation_count": int(current_task_stat.get("industry_violation_count", 0) or 0),
+            
+            province_stats[province]["count"] += 1
+            
+            valid_status = _normalize_collection_is_valid(item)
+            if valid_status == "illegal":
+                province_stats[province]["illegal_count"] += 1
+                # 检查是否涉及重点行业
+                judge_result = _normalize_collection_judge_result(item)
+                if judge_result:
+                    industry_field = None
+                    for key in ["行业类别编码及重点行业判断", "【行业类别编码及重点行业判断】"]:
+                        if key in judge_result:
+                            industry_field = judge_result[key]
+                            break
+                    if industry_field and isinstance(industry_field, str) and "涉及重点行业" in industry_field:
+                         province_stats[province]["industry_violation_count"] += 1
+                        
+            elif valid_status == "legal":
+                province_stats[province]["legal_count"] += 1
+                
+        # 4. 确定当前任务高亮信息
+        # 在去重后的数据中，找到属于当前高亮任务的文件，计算其单独统计（可选，或者直接使用之前的 current_task_stat）
+        # 为了保持一致性，我们仍然调用 _compute_task_region_stat 来获取当前任务的独立统计（它内部也去重了）
+        current_task_stat = _compute_task_region_stat(current_task_id_for_highlight, current_task_name_for_highlight, current_scene_id)
+        current_task_stat.update({
+            "is_current_task": True,
+            "current_task_id": current_task_id_for_highlight,
+            "current_task_name": current_task_name_for_highlight,
+        })
+        
+        # 将当前任务统计合并到省份统计中，用于标记 is_current_task
+        # 注意：current_task_stat 是当前任务去重后的统计。
+        # 我们需要更新 province_stats 中对应省份的 is_current_task 标记
+        current_prov = current_task_stat.get("province", "其他地区")
+        if current_prov in province_stats:
+            province_stats[current_prov]["is_current_task"] = True
+            province_stats[current_prov]["current_task_id"] = current_task_id_for_highlight
+            province_stats[current_prov]["current_task_name"] = current_task_name_for_highlight
+        else:
+            # 如果当前任务没有产生任何有效统计（比如空任务），也要确保它能出现在列表中
+            province_stats[current_prov] = {
+                "province": current_prov,
+                "count": current_task_stat.get("count", 0),
+                "illegal_count": current_task_stat.get("illegal_count", 0),
+                "legal_count": current_task_stat.get("legal_count", 0),
+                "industry_violation_count": current_task_stat.get("industry_violation_count", 0),
                 "is_current_task": True,
-                "current_task_id": task_id,
-                "current_task_name": current_task_name,
+                "current_task_id": current_task_id_for_highlight,
+                "current_task_name": current_task_name_for_highlight,
             }
 
-        agg[current_province]["is_current_task"] = True
-        agg[current_province]["current_task_id"] = task_id
-        agg[current_province]["current_task_name"] = current_task_name
-
-        regions = list(agg.values())
+        regions = list(province_stats.values())
         regions.sort(key=lambda x: x.get("province") or "")
 
         return jsonify(api_ok({
-            "current_task_id": task_id,
-            "current_task_name": current_task_name,
-            "current_task_province": current_province,
+            "current_task_id": current_task_id_for_highlight,
+            "current_task_name": current_task_name_for_highlight,
+            "current_task_province": current_prov,
             "current_task_stat": current_task_stat,
             "regions": regions,
         }))
     except Exception:
         return jsonify(api_fail(traceback.format_exc())), 500
-
-
