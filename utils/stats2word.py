@@ -1,22 +1,41 @@
 import os
 import uuid
+import tempfile
 import matplotlib.pyplot as plt
 from docx import Document
 from docx.shared import Inches
-from matplotlib import rcParams
+import matplotlib.font_manager as fm
 
 
-# ========= 解决中文显示问题 =========
-rcParams['font.sans-serif'] = ['SimHei']  # 黑体（Windows常用）
-rcParams['axes.unicode_minus'] = False    # 解决负号显示问题
+# ========= 初始化字体（关键修复） =========
+def init_font():
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_dir)
+
+    font_path = os.path.join(project_root, "fonts", "SimHei.ttf")
+
+    if not os.path.exists(font_path):
+        raise FileNotFoundError(f"字体文件不存在: {font_path}")
+
+    # 注册字体（解决 findfont 问题）
+    fm.fontManager.addfont(font_path)
+
+    font = fm.FontProperties(fname=font_path)
+
+    # 仅保留负号设置
+    plt.rcParams['axes.unicode_minus'] = False
+
+    return font
 
 
 def export_stats_to_word(data_list, save_path):
     """
-    将统计数据导出为Word文档（柱状图+饼图，支持中文）
+    将统计数据导出为Word文档（柱状图+饼图，支持中文，Docker稳定）
     """
 
-    # ========= 如果文件存在，直接覆盖 =========
+    font = init_font()
+
+    # ========= 覆盖文件 =========
     if os.path.exists(save_path):
         os.remove(save_path)
 
@@ -27,7 +46,7 @@ def export_stats_to_word(data_list, save_path):
         stats_prompt = item.get("stats_prompt", "")
         stats_result = item.get("stats_result", [])
 
-        # ========= 标题（加粗 + 编号） =========
+        # ========= 标题 =========
         p = doc.add_paragraph()
         run = p.add_run(f"{idx}. {stats_name}")
         run.bold = True
@@ -35,28 +54,39 @@ def export_stats_to_word(data_list, save_path):
         # ========= 正文 =========
         doc.add_paragraph(stats_prompt)
 
-        # ========= 数据解析 =========
+        # ========= 数据 =========
         labels = [x["name"] for x in stats_result]
         values = [x["value"] for x in stats_result]
 
-        # ========= 临时图片 =========
+        # ========= 临时文件 =========
+        tmp_dir = tempfile.gettempdir()
         tmp_id = str(uuid.uuid4())
-        bar_path = f"{tmp_id}_bar.png"
-        pie_path = f"{tmp_id}_pie.png"
+        bar_path = os.path.join(tmp_dir, f"{tmp_id}_bar.png")
+        pie_path = os.path.join(tmp_dir, f"{tmp_id}_pie.png")
 
-        # ========= 柱状图 =========
+        # ========= 柱状图（强制字体） =========
         plt.figure(figsize=(6, 4))
         plt.bar(labels, values)
-        plt.xticks(rotation=30, ha="right")
-        plt.title(f"{stats_name} - 柱状图")
+
+        plt.xticks(rotation=30, ha="right", fontproperties=font)
+        plt.yticks(fontproperties=font)
+        plt.title(f"{stats_name} - 柱状图", fontproperties=font)
+
         plt.tight_layout()
         plt.savefig(bar_path, dpi=300)
         plt.close()
 
-        # ========= 饼图 =========
+        # ========= 饼图（必须 textprops） =========
         plt.figure(figsize=(6, 4))
-        plt.pie(values, labels=labels, autopct="%1.1f%%")
-        plt.title(f"{stats_name} - 饼图")
+        plt.pie(
+            values,
+            labels=labels,
+            autopct="%1.1f%%",
+            textprops={'fontproperties': font}
+        )
+
+        plt.title(f"{stats_name} - 饼图", fontproperties=font)
+
         plt.tight_layout()
         plt.savefig(pie_path, dpi=300)
         plt.close()
