@@ -13,6 +13,7 @@ from utils.safe_name import is_safe_filename
 from utils.auth_util import AuthUtils
 from utils.task_verify import task_permission_required
 from utils import file_utils
+from pipeline import pipeline_manager as pm  # auto 分支新增：自动流水线
 
 task_json_manager = TaskJsonFileManager()
 json_manager = JsonFileManager()
@@ -209,6 +210,19 @@ def upload_file():
     # 构建文件URL
     file_url = f"/data/tasks/{task_id}/downloads/{safe_name}"
 
+    # auto 分支新增：上传成功后自动将文件加入流水线队列
+    try:
+        job_id = uuid.uuid4().hex
+        pm.enqueue_job(
+            task_id=task_id,
+            job_id=job_id,
+            file_name=original_name,
+            file_path=str(save_path),
+        )
+    except Exception as _pm_err:
+        print(f"[pipeline] 加入队列失败（不影响上传）: {_pm_err}")
+        job_id = None
+
     return jsonify({
         "success": True,
         "data": {
@@ -220,7 +234,8 @@ def upload_file():
             "status": "completed",
             "task_id": task_id,
             "file_url": file_url,
-            "user_id": user_id
+            "user_id": user_id,
+            "job_id": job_id,           # auto 分支新增：流水线 job_id
         }
     })
 
