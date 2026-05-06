@@ -13,6 +13,7 @@ from .processStatus_api import processStatus_bp  # 12.24修改[总日志追踪]
 from .airesult_api import airesult_bp # 0305新增
 from .statistic_api import statistic_bp
 from .auth_api import auth_bp
+from .job_api import job_bp  # auto 分支新增：pipeline job 接口
 from flask import Blueprint, jsonify
 import traceback
 from werkzeug.exceptions import HTTPException
@@ -32,6 +33,7 @@ def register_blueprints(app):
     app.register_blueprint(auth_bp,url_prefix="/api/auth")
     app.register_blueprint(airesult_bp, url_prefix="/api/airesult")  # 0305新增
     app.register_blueprint(statistic_bp, url_prefix="/api/statistic")# 0331新增
+    app.register_blueprint(job_bp, url_prefix="/api/jobs")  # auto 分支新增
     register_blueprint_error_handlers(app)
 
 

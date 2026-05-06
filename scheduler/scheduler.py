@@ -12,6 +12,7 @@ from .parse import update_parse_task_status,get_sorted_pending_parse_task,update
 from .state import can_run, mark_start, mark_done
 from .parse_port_state import release_port,get_parse_url,acquire_port
 from utils import util_parse,task_folder_utils,file_utils
+from pipeline import pipeline_manager as pm  # auto 分支新增
 
 
 
@@ -163,13 +164,6 @@ def _scheduler_loop(app):
                         parse_json_path
                     )
 
-                    # future.add_done_callback(
-                    #     lambda f, tid=task_id: on_parse_done(f, tid)
-                    # )
-                    # ✅ 把 app 显式传进回调
-                    # future.add_done_callback(
-                    #     lambda f, tid=task_id, app=app: on_parse_done(f, tid, app)
-                    # )
                     future.add_done_callback(
                         lambda f,
                                tid=task_id,
@@ -178,11 +172,62 @@ def _scheduler_loop(app):
                                pjp=parse_json_path,
                                app=app: on_parse_done(f, tid, pid, ps, pjp, app)
                     )
+
+            # auto 分支新增：pipeline 任务调度
+            _dispatch_pipeline_jobs(app)
+
         except Exception as e:
             app.logger.info(f"任务线程异常:{e}")
         time.sleep(5)
 
 
+
+
+def _dispatch_pipeline_jobs(app):
+    """
+    auto 分支新增：从 pipeline_tasks.json 取出 pending 任务，
+    提交到 parse_executor（ProcessPool）执行完整流水线。
+    task_dirs 在主线程（app context 内）预先计算后传入子进程，避免子进程访问 Flask current_app。
+    每次最多拉取 5 条。
+    """
+    try:
+        pending_jobs = pm.get_pending_jobs(limit=5)
+        for job in pending_jobs:
+            task_id = job["task_id"]
+            job_id = job["job_id"]
+            if not can_run(task_id):
+                continue
+
+            # 在 app context 内计算任务目录，供子进程使用
+            task_dirs = task_folder_utils.get_task_dirs(task_id)
+
+            pm.mark_running(task_id, job_id)
+            mark_start(task_id)
+
+            from pipeline.runner import run_pipeline_job
+            future = executor_mod.parse_executor.submit(run_pipeline_job, job, task_dirs)
+
+            future.add_done_callback(
+                lambda f, tid=task_id, jid=job_id, a=app: _on_pipeline_done(f, tid, jid, a)
+            )
+    except Exception as exc:
+        app.logger.warning(f"[pipeline] dispatch 异常: {exc}")
+
+
+def _on_pipeline_done(fut, task_id: str, job_id: str, app):
+    """pipeline job 完成回调"""
+    with app.app_context():
+        try:
+            fut.result()
+        except BrokenProcessPool:
+            app.logger.exception("[pipeline] BrokenProcessPool, job=%s", job_id)
+            pm.mark_failed(task_id, job_id, "BrokenProcessPool: worker crashed")
+            executor_mod.rebuild_parse_executor(app)
+        except Exception as exc:
+            app.logger.exception("[pipeline] job %s 异常: %s", job_id, exc)
+            pm.mark_failed(task_id, job_id, str(exc))
+        finally:
+            mark_done(task_id)
 
 
 def start_scheduler(app):
@@ -191,6 +236,12 @@ def start_scheduler(app):
     with _scheduler_lock:
         if _scheduler_started:
             return
+
+        # auto 分支新增：启动时恢复崩溃前 running 的 pipeline job
+        try:
+            pm.recover_stale_running_jobs()
+        except Exception as exc:
+            app.logger.warning(f"[pipeline] 崩溃恢复失败（可忽略）: {exc}")
 
         def runner():
             with app.app_context():
