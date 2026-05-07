@@ -111,6 +111,7 @@ def _parse_extraction_json(extract_obj: dict):
     page_idx = extract_obj.get("page_idx") or {}
     results = extract_obj.get("extraction_results") or []
     ai_extraction_results = extract_obj.get("ai_extraction_results") or {}
+    is_correct = extract_obj.get("is_correct") or "unknown"
 
     extraction_result = {}
     if isinstance(results, list) and len(results) > 0 and isinstance(results[0], dict):
@@ -119,7 +120,7 @@ def _parse_extraction_json(extract_obj: dict):
     if not isinstance(page_idx, dict):
         page_idx = {}
 
-    return extraction_result, page_idx,ai_extraction_results
+    return extraction_result, page_idx,ai_extraction_results,is_correct
 
 
 def _find_extraction_json(task_dirs: dict, file_name: str):
@@ -313,6 +314,7 @@ def airesult_file_info():
                 "file_name": collection["foldername"].replace("_分块结果",""),
                 "status": "judged" if collection["is_judged"] else "unjudge",
                 "valid": collection["is_valid"],
+                "is_correct":collection["is_correct"]
             })
 
         # 文档要求直接数组，不包 api_ok
@@ -341,7 +343,7 @@ def airesult_file_details():
         # extraction
         extract_path = _find_extraction_json(task_dirs, file_name)
         extract_obj = _safe_load_json(extract_path) if extract_path else {}
-        extraction_result, page_idx, ai_extraction_results = _parse_extraction_json(extract_obj)
+        extraction_result, page_idx, ai_extraction_results, is_correct = _parse_extraction_json(extract_obj)
 
         # discrimination
         dis_path, dis_obj = _find_discrimination_json(task_dirs, file_name)
@@ -380,6 +382,7 @@ def airesult_file_details():
             "judge_result": judge_result,
             "ai_judged_results": ai_judged_results,
             "judge_error": judge_error,
+            "is_correct": is_correct,
             "extraction_json": str(extract_path) if extract_path else None,
             "discrimination_json": str(dis_path) if dis_path else None
         }
@@ -448,6 +451,7 @@ def airesult_review():
         extraction_update = body.get("extraction_result") or {}
         page_idx_update = body.get("page_idx") or {}  # 0311修改：新增
         judge_update = body.get("judge_result") or {}
+        is_correct = body.get("is_correct") or "unknown"  # 0311修改：新增，是否核查正确，默认未知
 
         if not task_id or not file_name:
             return jsonify(api_fail("缺少task_id或file_name")), 400
@@ -485,7 +489,9 @@ def airesult_review():
             extract_obj["page_idx"] = {}
         if page_idx_update:
             extract_obj["page_idx"].update(page_idx_update)
-
+        if "is_correct" not in extract_obj or not isinstance(extract_obj.get("is_correct"), str):
+            extract_obj["is_correct"] = is_correct  # 0311修改：默认是正确的，除非 judge_result 里明确说不正确了才改为 False
+        extract_obj["is_correct"] = is_correct
         _safe_dump_json(extract_path, extract_obj)
 
         # ---------- 2) 更新 discrimination_results（不新建 file_name key） ----------
@@ -538,6 +544,7 @@ def airesult_review():
                 for collection in collections:
                     if file_name + "_parsed.json" == collection['filename']:
                         collection["is_reviewed"] = True
+                        collection["is_correct"] = is_correct
                         collection["update_time"] = int(time.time())
                         break
                     # 保存任务

@@ -1566,6 +1566,7 @@ def extract_single_json_file(json_file_path, extraction_rules, output_dir, resul
                     "is_judged":False,
                     "is_valid":"unknown",
                     "is_reviewed":False,
+                    "is_correct":"unkonwn",
                     "update_time":int(time.time())
                 }
                 collections.append(new_collection)
@@ -1747,7 +1748,8 @@ def create_extraction_result_with_metadata(extracted_data, extraction_rules, fol
             "extraction_rules": []
         },
         "extraction_results": base_data,
-        "page_idx": page_idx_map  # 在外部结构中保存页面索引
+        "page_idx": page_idx_map,  # 在外部结构中保存页面索引
+        "is_correct": "unknown" #最终判别是否正确
     }
 
     # 添加提取规则详情
