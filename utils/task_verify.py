@@ -54,6 +54,7 @@ def scene_or_task_permission_required():
     """
     0328修改：支持按 task_id（单任务权限检查）或 scene_id（场景聚合权限检查）。
     如果提供 scene_id，会检查场景中所有任务的权限。
+    0508修改：实现部分授权过滤，只保留用户有权限的任务，而不是因部分无权限而拒绝整个请求。
     """
     def decorator(func):
         @wraps(func)
@@ -73,14 +74,26 @@ def scene_or_task_permission_required():
                 if not scene_tasks:
                     return jsonify({"msg": "scene not found or no tasks in scene"}), 404
                 
-                # 检查用户对场景中所有任务的权限
+                # 0508修改：过滤出当前用户有权限的任务，而不是全量检查
+                authorized_scene_tasks = []
                 for task in scene_tasks:
-                    if user and task["group_name"] != user['group_name']:
-                        return jsonify({"msg": "permission denied for scene"}), 403
-                    if user and not task.get("share", False) and task["createdBy"] != user['user_id']:
-                        return jsonify({"msg": "permission denied for scene"}), 403
+                    has_permission = True
+                    if user:
+                        if task["group_name"] != user['group_name']:
+                            has_permission = False
+                        elif not task.get("share", False) and task["createdBy"] != user['user_id']:
+                            has_permission = False
+                    
+                    if has_permission:
+                        authorized_scene_tasks.append(task)
                 
-                g.scene_tasks = scene_tasks
+                # 如果过滤后没有有权限的任务，返回空结果而不是403
+                if not authorized_scene_tasks:
+                    g.scene_tasks = []
+                    g.scene_id = scene_id
+                    return func(*args, **kwargs)
+                
+                g.scene_tasks = authorized_scene_tasks
                 g.scene_id = scene_id
                 return func(*args, **kwargs)
             
