@@ -39,10 +39,11 @@ def task_permission_required():
             select_task = next((t for t in tasks if t["id"] == task_id), None)
             if not select_task:
                 return jsonify({"msg": "task not found"}), 404
-            if user and select_task["group_name"] != user['group_name']:
-                return jsonify({"msg": "permission denied"}), 403
-            if user and not select_task.get("share", False) and select_task["createdBy"] != user['user_id']:
-                return jsonify({"msg": "permission denied"}), 403
+            if user and not select_task.get("share", False):
+                if select_task["group_name"] != user['group_name']:
+                    return jsonify({"msg": "permission denied"}), 403
+                if select_task["createdBy"] != user['user_id']:
+                    return jsonify({"msg": "permission denied"}), 403
 
             g.task = select_task
             return func(*args, **kwargs)
@@ -116,10 +117,11 @@ def scene_or_task_permission_required():
             select_task = next((t for t in tasks if t["id"] == task_id), None)
             if not select_task:
                 return jsonify({"msg": "task not found"}), 404
-            if user and select_task["group_name"] != user['group_name']:
-                return jsonify({"msg": "permission denied"}), 403
-            if user and not select_task.get("share", False) and select_task["createdBy"] != user['user_id']:
-                return jsonify({"msg": "permission denied"}), 403
+            if user and not select_task.get("share", False):
+                if select_task["group_name"] != user['group_name']:
+                    return jsonify({"msg": "permission denied"}), 403
+                if select_task["createdBy"] != user['user_id']:
+                    return jsonify({"msg": "permission denied"}), 403
 
             g.task = select_task
             return func(*args, **kwargs)

@@ -55,22 +55,22 @@ def get_tasks():
         # 确保任务数据格式正确
         formatted_tasks = []
         for task in tasks:
-            if task.get("group_name","unknown") == user_departments:
-                if task.get("share",False) == True or task.get("createdBy",0) == user_id:
-                    formatted_task = {
-                        "id": task.get("id", str(uuid.uuid4())),
-                        "share": task.get("share", False),
-                        "group_name": task.get("group_name", "unknown"),
-                        "name": task.get("name", "未命名任务"),
-                        "province": task.get("province", ""),  # 0317修改：任务列表接口返回省份
-                        "sceneId": task.get("sceneId", "default"),  # 添加场景ID
-                        "sceneName": task.get("sceneName", ""),  # 添加场景名称
-                        "description": task.get("description", ""),
-                        "extractionRules": task.get("extractionRules", []),
-                        "judgmentRules": task.get("judgmentRules", []),
-                        "createdAt": task.get("createdAt", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-                    }
-                    formatted_tasks.append(formatted_task)
+            task_group = str(task.get("group_name","unknown") or "unknown").strip()
+            if task.get("share", False) or task.get("createdBy", 0) == user_id or task_group == user_departments:
+                formatted_task = {
+                    "id": task.get("id", str(uuid.uuid4())),
+                    "share": task.get("share", False),
+                    "group_name": task.get("group_name", "unknown"),
+                    "name": task.get("name", "未命名任务"),
+                    "province": task.get("province", ""),  # 0317修改：任务列表接口返回省份
+                    "sceneId": task.get("sceneId", "default"),  # 添加场景ID
+                    "sceneName": task.get("sceneName", ""),  # 添加场景名称
+                    "description": task.get("description", ""),
+                    "extractionRules": task.get("extractionRules", []),
+                    "judgmentRules": task.get("judgmentRules", []),
+                    "createdAt": task.get("createdAt", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                }
+                formatted_tasks.append(formatted_task)
         return jsonify({
             "success": True,
             "tasks": formatted_tasks
@@ -134,9 +134,9 @@ def create_task():
             # 创建新任务
             new_task = {
                 "id": data.get("id", str(uuid.uuid4())),
-                "share":data.get("share", True),
-                "group_name": data.get("group_name", "unknown"),
-                "createdBy": data.get("createdBy", 0),
+                "share": data.get("share", True),
+                "group_name": str(data.get("group_name") or request.current_user.get("group_name", "unknown")).strip(),
+                "createdBy": data.get("createdBy", request.current_user.get("user_id", 0)),
                 "name": data.get("name"),
                 "province": province,  # 0317修改：保存省份到 tasks.json
                 "sceneId": data.get("sceneId", "default"),  # 添加场景ID
