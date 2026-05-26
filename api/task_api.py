@@ -144,8 +144,19 @@ def get_deleted_tasks():
             deleted_tasks = json.load(f)
 
         result_tasks = []
+        # 当前用户信息（用于权限过滤）
+        user_id = request.current_user.get("user_id", 0)
+        user_departments = request.current_user.get("group_name", "unknown")
+
         for item in deleted_tasks:
             if scene_id and str(item.get("sceneId", "")).strip() != scene_id:
+                continue
+
+            # 权限过滤：仅返回共享任务，或创建者本人，或与当前用户同一用户组的任务
+            item_share = item.get("share", False)
+            item_group = str(item.get("group_name", "unknown") or "unknown").strip()
+            item_creator = item.get("createdBy", 0)
+            if not (item_share or item_creator == user_id or item_group == user_departments):
                 continue
 
             task_id = item.get("id")
@@ -163,8 +174,8 @@ def get_deleted_tasks():
                 "sceneId": task_scene,
                 "deleted_at": item.get("deleted_at"),
                 "downloadUrl": download_url,
-                "share": False,
-                "group_name": "",
+                "share": item.get("share", False),
+                "group_name": item.get("group_name", "unknown"),
                 "description": "",
                 "extractionRules": [],
                 "judgmentRules": [],
@@ -196,6 +207,24 @@ def download_deleted_result(scene_task, filename):
     except Exception as e:
         print(f"下载已删除任务结果失败: {e}")
         return jsonify({"error": str(e)}), 500
+
+@task_bp.delete("/deleted-files/<scene_task>")
+@AuthUtils.token_required
+def delete_deleted_task_files(scene_task):
+    """永久删除已删除任务在 delete 目录中的结果文件夹"""
+    try:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", scene_task):
+            return jsonify({"error": "invalid scene task"}), 400
+
+        delete_folder = DELETE_DIR / scene_task
+        if not delete_folder.exists():
+            return jsonify({"success": True, "message": "文件夹不存在，已忽略"})
+
+        shutil.rmtree(delete_folder)
+        return jsonify({"success": True, "message": "已永久删除结果文件"})
+    except Exception as e:
+        print(f"永久删除已删除任务结果文件失败: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
 
 # 添加任务
 @task_bp.post("/add_task")
@@ -455,6 +484,14 @@ def _generate_excel_for_deleted_task(task_id, deleted_task, delete_target_dir):
             data_row["地块编号"] = report_data.get("地块编号", "")
             data_row["报告名称"] = report_data.get("报告名称", report_base_name)
             
+            # 保存用于图片查找的文件名（优先使用提取文件名，因为提取文件更可能有图片）
+            if "_original_extracted_filename" in report_data:
+                data_row["_image_lookup_filename"] = report_data["_original_extracted_filename"]
+            elif "_original_discrimination_filename" in report_data:
+                data_row["_image_lookup_filename"] = report_data["_original_discrimination_filename"]
+            else:
+                data_row["_image_lookup_filename"] = report_base_name
+            
             # 填充提取字段
             for header in all_headers:
                 if header in base_fields:
@@ -501,19 +538,65 @@ def _generate_excel_for_deleted_task(task_id, deleted_task, delete_target_dir):
             cell.alignment = Alignment(horizontal='center', vertical='center')
             cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
         
-        # 写入数据
+        # 写入数据 - 添加图片嵌入逻辑
         for row_idx, data_row in enumerate(final_data, 2):
             for col_idx, header in enumerate(all_headers, 1):
                 value = data_row.get(header, "")
                 cell = ws.cell(row=row_idx, column=col_idx, value=value)
                 cell.alignment = Alignment(wrap_text=True, vertical='top')
+                
+                # 关键修复：检查是否需要嵌入图片
+                if value and isinstance(value, str):
+                    # 检查是否是图片路径
+                    is_image_path = False
+                    image_keywords = ["images/", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"]
+                    
+                    # 将值转为小写进行比较
+                    value_lower = value.lower()
+                    for keyword in image_keywords:
+                        if keyword in value_lower:
+                            is_image_path = True
+                            break
+                    
+                    if is_image_path:
+                        # 获取用于图片查找的报告名称
+                        image_lookup_name = data_row.get("_image_lookup_filename", data_row.get("报告名称", ""))
+                        
+                        # 移除文件名中的_extracted或_discrimination后缀
+                        if image_lookup_name.endswith("_extracted"):
+                            image_lookup_name = image_lookup_name[:-10]
+                        elif image_lookup_name.endswith("_discrimination"):
+                            image_lookup_name = image_lookup_name[:-15]
+                        
+                        print(f"  [图片嵌入] 使用报告名称: {image_lookup_name}")
+                        
+                        # 调用图片嵌入函数
+                        try:
+                            image_embedded = util_result._maybe_embed_image(
+                                ws, 
+                                row_idx, 
+                                col_idx, 
+                                value, 
+                                str(task_dirs['base']), 
+                                image_lookup_name
+                            )
+                            
+                            if image_embedded:
+                                print(f"  [图片嵌入] ✓ 图片嵌入成功")
+                            else:
+                                print(f"  [图片嵌入] ✗ 图片嵌入失败")
+                        except Exception as e:
+                            print(f"  [图片嵌入] ! 图片嵌入异常: {e}")
         
-        # 自动调整列宽
+        # 自动调整列宽 - 但跳过有图片的列
         for col_idx, header in enumerate(all_headers, 1):
+            if col_idx in util_result._COLS_WITH_IMAGES:
+                continue
             column_width = len(str(header)) + 2
             for row_idx in range(2, len(final_data) + 2):
                 cell_value = str(ws.cell(row=row_idx, column=col_idx).value)
-                column_width = max(column_width, len(cell_value) + 2)
+                if cell_value:
+                    column_width = max(column_width, len(str(cell_value)) + 2)
             ws.column_dimensions[get_column_letter(col_idx)].width = min(column_width, 50)
         
         wb.save(excel_path)
@@ -559,11 +642,14 @@ def delete_task(task_id):
             if deleted_task is None:
                 return jsonify({"error": "任务不存在"}), 404
             
-            # 保存被删除任务的元数据
+            # 保存被删除任务的元数据（包含创建者、用户组和共享标识）
             deleted_task_info = {
                 "id": deleted_task.get("id"),
                 "sceneId": deleted_task.get("sceneId", "default"),
-                "name": deleted_task.get("name", "未命名任务")
+                "name": deleted_task.get("name", "未命名任务"),
+                "group_name": deleted_task.get("group_name", "unknown"),
+                "share": deleted_task.get("share", False),
+                "createdBy": deleted_task.get("createdBy", 0)
             }
             
             # 过滤掉要删除的任务

@@ -310,15 +310,31 @@ def airesult_file_info():
                     all_items.append({
                         "file_name": collection["foldername"].replace("_分块结果",""),
                         "status": "judged" if collection["is_judged"] else "unjudge",
-                        "valid": collection["is_valid"],
+                        "valid": collection.get("is_valid", "unknown"),
+                        "is_reviewed": bool(collection.get("is_reviewed", False)),
                         "is_correct": collection.get("is_correct", "unknown"),
+                        "update_time": collection.get("update_time", 0)
                     })
             except Exception as e:
                 print(f"加载 task {tid} 文件信息时出错: {e}")
                 continue
         
+        # 全局去重：相同文件名的只保留update_time最大（最新）的记录
+        deduplicated_items = {}
+        for item in all_items:
+            file_name = item["file_name"]
+            if file_name not in deduplicated_items:
+                deduplicated_items[file_name] = item
+            else:
+                # 如果当前记录的update_time更大（更新），则替换
+                if item["update_time"] > deduplicated_items[file_name]["update_time"]:
+                    deduplicated_items[file_name] = item
+        
+        # 转换为列表返回
+        result_items = list(deduplicated_items.values())
+        
         # 文档要求直接数组，不包 api_ok
-        return jsonify(all_items)
+        return jsonify(result_items)
     except Exception:
         return jsonify(api_fail(traceback.format_exc())), 500
 
@@ -374,8 +390,9 @@ def airesult_file_details():
                     judge_result = _sanitize_judge_result(jr)
                     judge_error = None
 
-        # 从 result_collection 获取 is_correct
+        # 从 result_collection 获取 is_correct 和 is_reviewed
         is_correct = "unknown"
+        is_reviewed = False
         from .statistic_api import _get_task_record_from_tasks_json
         task_record = _get_task_record_from_tasks_json(task_id)
         scene_id = str(task_record.get("sceneId") or "default").strip()
@@ -386,6 +403,7 @@ def airesult_file_details():
             for collection in collections:
                 if collection["foldername"].replace("_分块结果","") == file_name:
                     is_correct = collection.get("is_correct", "unknown")
+                    is_reviewed = bool(collection.get("is_reviewed", False))
                     break
 
         payload = {
@@ -397,6 +415,7 @@ def airesult_file_details():
             "ai_judged_results": ai_judged_results,
             "judge_error": judge_error,
             "is_correct": is_correct,
+            "is_reviewed": is_reviewed,
             "extraction_json": str(extract_path) if extract_path else None,
             "discrimination_json": str(dis_path) if dis_path else None
         }
@@ -495,14 +514,21 @@ def airesult_review():
         if "ai_extraction_results" not in extract_obj:
             extract_obj["ai_extraction_results"] = copy.deepcopy(extract_obj["extraction_results"][0])
 
+        current_extraction = copy.deepcopy(extract_obj["extraction_results"][0])
+        current_page_idx = copy.deepcopy(extract_obj.get("page_idx") or {})
+
         # 0311修改：更新提取字段
-        extract_obj["extraction_results"][0].update(extraction_update)
+        updated_extraction = copy.deepcopy(current_extraction)
+        updated_extraction.update(extraction_update)
+        extract_obj["extraction_results"][0] = updated_extraction
 
         # 0311修改：同时更新 page_idx
         if "page_idx" not in extract_obj or not isinstance(extract_obj.get("page_idx"), dict):
             extract_obj["page_idx"] = {}
+        updated_page_idx = copy.deepcopy(current_page_idx)
         if page_idx_update:
-            extract_obj["page_idx"].update(page_idx_update)
+            updated_page_idx.update(page_idx_update)
+            extract_obj["page_idx"] = updated_page_idx
 
         _safe_dump_json(extract_path, extract_obj)
 
@@ -511,6 +537,16 @@ def airesult_review():
         dis_path, dis_obj = _find_discrimination_json(task_dirs, file_name)
         if not dis_path or dis_obj is None:
             return jsonify(api_fail("未找到判别结果json")), 404
+
+        current_judge_data = {}
+        if isinstance(dis_obj, list) and len(dis_obj) > 0 and isinstance(dis_obj[0], dict):
+            dis_map = dis_obj[0]
+            keys = list(dis_map.keys())
+            if len(keys) > 0:
+                first_key = keys[0]
+                arr = dis_map.get(first_key)
+                if isinstance(arr, list) and len(arr) > 0 and isinstance(arr[0], dict):
+                    current_judge_data = copy.deepcopy(arr[0])
 
         # 标准化 dis_obj 为 list[dict]
         if not isinstance(dis_obj, list) or len(dis_obj) == 0 or not isinstance(dis_obj[0], dict):
@@ -551,11 +587,22 @@ def airesult_review():
             if not result_collection_file_path.exists():
                 result_collection_file_path.write_text("[]", encoding="utf-8")
             # 使用文件锁，确保多任务读取时文件不被破坏
+            is_reviewed_by_changes = False
+            if extraction_update and updated_extraction != current_extraction:
+                is_reviewed_by_changes = True
+            if page_idx_update and updated_page_idx != current_page_idx:
+                is_reviewed_by_changes = True
+            if judge_update and isinstance(judge_update, dict):
+                updated_judge_data = copy.deepcopy(current_judge_data)
+                updated_judge_data.update(judge_update)
+                if updated_judge_data != current_judge_data:
+                    is_reviewed_by_changes = True
+
             with result_collection_json_manager.file_lock:
                 collections = result_collection_json_manager.load_json_without_lock(result_collection_file_path)
                 for collection in collections:
                     if file_name + "_parsed.json" == collection['filename']:
-                        if extraction_update or judge_update:
+                        if is_reviewed_by_changes:
                             collection["is_reviewed"] = True
                             collection["update_time"] = int(time.time())
                         # 新增：保存 is_correct 标记
@@ -787,37 +834,6 @@ def save_stats_in_scene():
     except Exception:
         return jsonify(api_fail(traceback.format_exc())), 500
 
-
-# # 7) /airesult/get/stats/scene - 获取场景统计数据
-# @airesult_bp.get("/get/stats/scene")
-# @AuthUtils.token_required
-# @task_permission_required()
-# def get_stats_in_scene():
-#     """
-#     query: scene_id
-#     return: {data: [{stats_name, stats_prompt, stats_result}]}
-#     """
-#     try:
-#         scene_id = (request.args.get("scene_id") or "").strip()
-#         if not scene_id:
-#             return jsonify(api_fail("缺少scene_id")), 400
-
-#         # 场景统计数据存储在 data/tasks 目录下
-#         tasks_dir = Path("data/tasks")
-#         saved_stats_file = tasks_dir / f"saved_stats_scene_{scene_id}.json"
-
-#         if not saved_stats_file.exists():
-#             return jsonify(api_ok({"data": []}))
-
-#         with saved_stats_file.open('r', encoding='utf-8') as f:
-#             saved_stats = json.load(f)
-
-#         # 只返回scene类型的统计数据
-#         scene_stats = [stat for stat in saved_stats if stat.get("type") == "scene"]
-
-#         return jsonify(api_ok({"data": scene_stats}))
-#     except Exception:
-#         return jsonify(api_fail(traceback.format_exc())), 500
 
 
 # 6) /airesult/get/stats/task - 获取任务统计数据

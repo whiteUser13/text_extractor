@@ -1566,7 +1566,7 @@ def extract_single_json_file(json_file_path, extraction_rules, output_dir, resul
                     "is_judged":False,
                     "is_valid":"unknown",
                     "is_reviewed":False,
-                    "is_correct":"unkonwn",
+                    "is_correct":"unknown",
                     "update_time":int(time.time())
                 }
                 collections.append(new_collection)

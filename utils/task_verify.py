@@ -40,9 +40,12 @@ def task_permission_required():
             if not select_task:
                 return jsonify({"msg": "task not found"}), 404
             if user and not select_task.get("share", False):
-                if select_task["group_name"] != user['group_name']:
-                    return jsonify({"msg": "permission denied"}), 403
-                if select_task["createdBy"] != user['user_id']:
+                # 允许访问如果：是创建者 或 属于同一个group_name（非unknown情况）
+                is_creator = select_task["createdBy"] == user['user_id']
+                same_group = (select_task["group_name"] != "unknown" and 
+                             select_task["group_name"] == user['group_name'])
+                
+                if not (is_creator or same_group):
                     return jsonify({"msg": "permission denied"}), 403
 
             g.task = select_task
@@ -79,11 +82,12 @@ def scene_or_task_permission_required():
                 authorized_scene_tasks = []
                 for task in scene_tasks:
                     has_permission = True
-                    if user:
-                        if task["group_name"] != user['group_name']:
-                            has_permission = False
-                        elif not task.get("share", False) and task["createdBy"] != user['user_id']:
-                            has_permission = False
+                    if user and not task.get("share", False):
+                        # 允许访问如果：是创建者 或 属于同一个group_name（非unknown情况）
+                        is_creator = task["createdBy"] == user['user_id']
+                        same_group = (task["group_name"] != "unknown" and 
+                                     task["group_name"] == user['group_name'])
+                        has_permission = is_creator or same_group
                     
                     if has_permission:
                         authorized_scene_tasks.append(task)
@@ -118,9 +122,12 @@ def scene_or_task_permission_required():
             if not select_task:
                 return jsonify({"msg": "task not found"}), 404
             if user and not select_task.get("share", False):
-                if select_task["group_name"] != user['group_name']:
-                    return jsonify({"msg": "permission denied"}), 403
-                if select_task["createdBy"] != user['user_id']:
+                # 允许访问如果：是创建者 或 属于同一个group_name（非unknown情况）
+                is_creator = select_task["createdBy"] == user['user_id']
+                same_group = (select_task["group_name"] != "unknown" and 
+                             select_task["group_name"] == user['group_name'])
+                
+                if not (is_creator or same_group):
                     return jsonify({"msg": "permission denied"}), 403
 
             g.task = select_task
