@@ -1359,7 +1359,7 @@ def extract_content_from_json(json_content, extraction_rules, folder_name, filen
         )
 
         # 4. 调用大模型进行内容提取
-        result_text = deepseek_generate_stream(user_content)
+        result_text = env_deepseek_v4(user_content)
 
         if not result_text:
             print(f"❌ API调用失败，返回'未找到'结果")
@@ -2303,6 +2303,40 @@ def generate_stream(
 
     return final_text
 
+def env_deepseek_v4(
+        prompt: str,
+        max_new_tokens: int = 1500,
+        timeout: int = 240
+) -> str:
+    url = "http://10.100.240.2/v1/chat/completions"
+    headers = {
+        "Authorization": "Bearer e5e93db68f8dfb893753b291083dfd7232ad96fabc1f7db0117a3044f4395c5f",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "deepseek-v4-flash",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    }
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+        response.raise_for_status()
+    except Exception as e:
+        print(f"❌ API请求失败: {e}")
+        return None
+    result = response.json()
+    print(result)
+    final_text = result["choices"][0]["message"]["content"]
+    return final_text
 
 def deepseek_generate_stream(
         prompt: str,
@@ -2558,7 +2592,7 @@ def extract_content_from_markdown(markdown_content, extraction_rules, folder_nam
         )
 
         print(f"\n=== 调用大模型进行内容提取 ===")
-        result_text = deepseek_generate_stream(user_content)
+        result_text = env_deepseek_v4(user_content)
 
         if not result_text:
             print(f"❌ API调用失败，返回'未找到'结果")

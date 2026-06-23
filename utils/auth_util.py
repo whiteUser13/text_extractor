@@ -85,8 +85,8 @@ class AuthUtils:
             WHITELIST_PATHS = [
                 '/api/task/info',
             ]
-            LEADERS=['汪海洋','魏斌','毛剑英','李蔚','陈煜欣','黄明祥','陆楠','赵苗苗','范雪环','高枫']
-            DEVELOPERS= ['张博','雷震','潘紫玲','轩长征','周泽南','王祖翰','刘婉平']
+            LEADERS=['汪海洋','魏斌','毛剑英','李蔚','陈煜欣','黄明祥','陆楠','赵苗苗','范雪环','高枫','张博','轩长征']
+            DEVELOPERS= ['雷震','潘紫玲','周泽南','王祖翰','刘婉平']
             token = None
             # 优先从 Authorization header 获取
             auth_header = request.headers.get("Authorization", "")
@@ -105,7 +105,8 @@ class AuthUtils:
             # 向统一鉴权服务验证token
             try:
                 # 从环境变量或配置获取鉴权服务地址
-                auth_service_url = os.getenv('AUTH_SERVICE_URL', 'http://10.100.224.56:35501/auth-server')
+                print(token)
+                auth_service_url = 'http://10.100.226.96:8238/oauth2'
 
                 # 调用用户信息接口
                 response = requests.get(
@@ -118,7 +119,8 @@ class AuthUtils:
                 )
 
                 # 检查响应状态
-                if response.status_code != 200:
+                print(response.ok)
+                if not response.ok:
                     error_msg = f"Token validation failed: {response.status_code}"
                     try:
                         error_data = response.json()
@@ -145,16 +147,16 @@ class AuthUtils:
                 auth_header = request.headers.get("Authorization", "")
                 # ... 其余代码保持不变
                 user_info = response.json()
-                print(user_info['name'])
+                print(user_info)
                 if not skip_permission_check:
                     # if(not AuthUtils.verify_app_permission(user_info['roles'],Config.APPLICATION_ID)):
                     #     return jsonify({"msg": "该用户没有权限"}), 403
                     if user_info['name'] not in LEADERS and user_info['name'] not in DEVELOPERS:
                         return jsonify({"msg": "该用户没有权限"}), 403
                 user = {
-                    "user_id": user_info['id'],
-                    "username":user_info['username'],
-                    "group_name":user_info['departments'][0]['name'] or "未知"
+                    "user_id": user_info['username'],
+                    "username":user_info['name'],
+                    "group_name":user_info['sub'] or "未知"
                     # "group_name": "生态环境部信息中心"
                 }
                 if not user["user_id"]:

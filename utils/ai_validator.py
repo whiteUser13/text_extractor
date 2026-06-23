@@ -344,7 +344,7 @@ class AIValidator:
         # 根据错误信息，接口需要 'inputs' 参数且类型为字符串
         # print("***********输入提示词**********")
         # print(prompt)
-        result = self.deepseek_chat(prompt)
+        result = self.env_deepseek_v4(prompt)
         # print("***********判别json***********")
         # print(result)
 
@@ -1014,6 +1014,46 @@ class AIValidator:
 
         return final_text
 
+    def env_deepseek_v4(
+            self,
+            prompt: str,
+            max_new_tokens: int = 1500,
+            timeout: int = 240
+    ) -> str:
+        url = "http://10.100.240.2/v1/chat/completions"
+        headers = {
+            "Authorization": "Bearer e5e93db68f8dfb893753b291083dfd7232ad96fabc1f7db0117a3044f4395c5f",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "deepseek-v4-flash",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        }
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=60
+            )
+            # 检查状态码
+            response.raise_for_status()
+        except Exception as e:
+            print(f"❌ API请求失败: {e}")
+            return None
+        # 解析 JSON
+        result = response.json()
+
+        # 打印完整返回
+        print(result)
+        # 常见 OpenAI / DeepSeek 风格的最终文本位置
+        final_text = result["choices"][0]["message"]["content"]
+        return final_text
     def deepseek_chat(
             self,
             prompt: str,
