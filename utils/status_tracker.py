@@ -162,7 +162,7 @@ class StatusTracker:
                 data["files"][key] = {
                     "final_status": Status.PROCESSING,
                     "updated_at": "",
-                    "original_name": key,
+                    "original_name": file_name,
                     "related_files": []
                 }
 

@@ -113,6 +113,7 @@ def upload_file():
 
     # 生成安全文件名并保存到任务目录
     original_name = file.filename
+    print(file.filename)
     safe_name = safe_filename(file.filename)
     save_path = Path(f"data/tasks/{task_id}/downloads") / original_name
     

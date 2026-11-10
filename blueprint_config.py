@@ -21,4 +21,51 @@ class Config:
     EXTRACT_TASKS_FILE = os.path.join(BASE_DIR, "data/tasks/extract_tasks.json")
     JUDGE_TASKS_FILE = os.path.join(BASE_DIR, "data/tasks/judge_tasks.json")
     # 统一鉴权登录
-    APPLICATION_ID = "c5a8639164b81b94ffbfb8df94886693"
+    APPLICATION_ID = "app_852030526452797440"
+    OAUTH2_REVOCATION_URL = os.getenv(
+        "OAUTH2_REVOCATION_URL",
+        "http://10.100.226.96:8238/oauth2/revoke",
+    )
+    OAUTH2_TOKEN_URL = os.getenv(
+        "OAUTH2_TOKEN_URL",
+        "http://10.100.226.96:8238/oauth2/token",
+    )
+    OAUTH2_ISSUER = os.getenv(
+        "OAUTH2_ISSUER",
+        "http://10.100.226.96:8238",
+    )
+    OAUTH2_JWKS_URL = os.getenv(
+        "OAUTH2_JWKS_URL",
+        "http://10.100.226.96:8238/.well-known/jwks.json",
+    )
+
+    # 本地测试时需替换为本丢服务地址
+    # OAUTH2_REDIRECT_URI = os.getenv(
+    #     "OAUTH2_REDIRECT_URI",
+    #     "http://10.10.163.145:8080/login",
+    # )
+    OAUTH2_REDIRECT_URI = os.getenv(
+        "OAUTH2_REDIRECT_URI",
+        "http://localhost:5173/login",
+    )
+
+    OAUTH2_CLIENT_ID = os.getenv("OAUTH2_CLIENT_ID", APPLICATION_ID)
+    OAUTH2_CLIENT_SECRET = os.getenv(
+        "OAUTH2_CLIENT_SECRET",
+        "K0JaTzt--SVYWiN7TAkzFN4I7lL0VmNg6J0W6Aygjv0",
+    )
+    OAUTH2_REQUEST_TIMEOUT = float(os.getenv("OAUTH2_REQUEST_TIMEOUT", "5"))
+    OAUTH2_REFRESH_COOKIE_NAME = os.getenv(
+        "OAUTH2_REFRESH_COOKIE_NAME",
+        "oauth_refresh_token",
+    )
+    OAUTH2_REFRESH_COOKIE_SECURE = (
+        os.getenv("OAUTH2_REFRESH_COOKIE_SECURE", "false").lower() == "true"
+    )
+    OAUTH2_REFRESH_COOKIE_SAMESITE = os.getenv(
+        "OAUTH2_REFRESH_COOKIE_SAMESITE",
+        "Lax",
+    )
+    OAUTH2_REFRESH_COOKIE_MAX_AGE = int(
+        os.getenv("OAUTH2_REFRESH_COOKIE_MAX_AGE", str(30 * 24 * 60 * 60))
+    )
